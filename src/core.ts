@@ -300,7 +300,6 @@ function createStore<T extends object>(
   const { proxy, revoke } = Proxy.revocable(state, handle);
   state.revoke = revoke;
 
-  // handle functions
   const produce = (func: () => any) => {
     admin.allowChange = true;
     const result = func();
