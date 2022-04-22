@@ -136,6 +136,49 @@ function createStore<T extends object>(
     return proxy;
   };
 
+  const setData = (
+    isDelete: boolean,
+    state: State,
+    prop: string,
+    value?: any
+  ) => {
+    const source = state.base;
+    if (isDelete ? prop in source : source[prop] !== value) {
+      logger.log(`${name} changed`);
+      admin.pendingChangeDirect.add(name);
+      admin.pendingChange.add(state);
+
+      if (!state.copy) {
+        state.copy = clone(state.base);
+      }
+      isDelete ? delete state.copy[prop] : (state.copy[prop] = value);
+
+      const subscribes = admin.subscribeMap[name];
+      if (subscribes) {
+        Object.keys(subscribes).forEach(
+          (key) => (subscribes[key].changed = true)
+        );
+      }
+    } else {
+      if (
+        state.copy &&
+        (isDelete ? prop in state.copy : state.copy[prop] !== value)
+      ) {
+        logger.log(`${name} restored`);
+        admin.pendingChangeDirect.delete(name);
+        admin.pendingChange.delete(state);
+        isDelete ? delete state.copy[prop] : (state.copy[prop] = value);
+
+        const subscribes = admin.subscribeMap[name];
+        if (subscribes) {
+          Object.keys(subscribes).forEach(
+            (key) => (subscribes[key].changed = false)
+          );
+        }
+      }
+    }
+  };
+
   const handle: ProxyHandler<State> = {
     get(state, prop) {
       if (prop === STATE) {
@@ -213,31 +256,7 @@ function createStore<T extends object>(
       const name = `${state.name}.${prop}`;
       logger.log(`set ${name}`);
 
-      const source = state.base;
-      if (source[prop] !== value) {
-        logger.log(`${name} changed`);
-        admin.pendingChangeDirect.add(name);
-        admin.pendingChange.add(state);
-
-        if (!state.copy) {
-          state.copy = clone(state.base);
-        }
-        state.copy[prop] = value;
-      } else {
-        if (state.copy && state.copy[prop] !== value) {
-          logger.log(`${name} restored`);
-          admin.pendingChangeDirect.delete(name);
-          admin.pendingChange.delete(state);
-          state.copy[prop] = value;
-        }
-      }
-
-      const subscribes = admin.subscribeMap[name];
-      if (subscribes) {
-        Object.keys(subscribes).forEach(
-          (key) => (subscribes[key].changed = true)
-        );
-      }
+      setData(false, state, prop, value);
 
       return true;
     },
@@ -266,31 +285,7 @@ function createStore<T extends object>(
       const name = `${state.name}.${prop}`;
       logger.log(`delete ${name}`);
 
-      const source = state.base;
-      if (prop in source) {
-        logger.log(`${name} changed`);
-        admin.pendingChangeDirect.add(name);
-        admin.pendingChange.add(state);
-
-        if (!state.copy) {
-          state.copy = clone(state.base);
-        }
-        delete state.copy[prop];
-      } else {
-        if (state.copy && prop in state.copy) {
-          logger.log(`${name} restored`);
-          admin.pendingChangeDirect.delete(name);
-          admin.pendingChange.delete(state);
-          delete state.copy[prop];
-        }
-      }
-
-      const subscribes = admin.subscribeMap[name];
-      if (subscribes) {
-        Object.keys(subscribes).forEach(
-          (key) => (subscribes[key].changed = true)
-        );
-      }
+      setData(true, state, prop);
 
       return true;
     },

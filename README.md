@@ -1,13 +1,13 @@
 # store
 
-An easy store for react and hooks.
+A high-optimized multiple store for react and hooks.
 
-Another version: [easystore](https://github.com/sky0014/easystore)
+Another single store library: [easystore](https://github.com/sky0014/easystore)
 
 # Feature
 
-- Simple, less than 500 lines, no more dependencies
-- Support multiple store
+- Simple, less than 500 lines, almost no dependencies
+- Support multiple stores
 - Support immutable
 - Support nested data
 - Support computed
