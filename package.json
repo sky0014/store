@@ -1,6 +1,6 @@
 {
   "name": "@sky0014/store",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "An easy store for react and hooks.",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

@@ -27,7 +27,6 @@ interface State {
   parent?: State;
   base?: any;
   copy?: any;
-  changed?: boolean;
   expired?: boolean;
   revoke?: () => void;
 }
@@ -42,7 +41,7 @@ interface StoreAdmin {
   collectTarget: Computed[];
   allowChange: boolean;
   pendingChange: Set<State>;
-  pendingDirectChange: Set<string>;
+  pendingChangeDirect: Set<string>;
   subscribeListeners: Set<SubscribeListener>;
   reportDepend?: (name: string) => void;
 }
@@ -92,7 +91,7 @@ function createStore<T extends object>(
     collectTarget: [],
     allowChange: false,
     pendingChange: new Set(),
-    pendingDirectChange: new Set(),
+    pendingChangeDirect: new Set(),
     subscribeListeners: new Set(),
   };
 
@@ -112,22 +111,11 @@ function createStore<T extends object>(
     }
   };
 
-  const markChanged = (state: State) => {
-    logger.log(`${state.name} changed`);
-    state.changed = true;
-    admin.pendingChange.add(state);
-
-    if (state.parent) {
-      markChanged(state.parent);
-    }
-  };
-
   const createProxy = (target: any, name: string, parent: State) => {
     const state: State = {
       name,
       parent,
       base: target,
-      changed: false,
     };
 
     logger.log(`create proxy: ${name}`);
@@ -228,15 +216,19 @@ function createStore<T extends object>(
       const source = state.base;
       if (source[prop] !== value) {
         logger.log(`${name} changed`);
-        admin.pendingDirectChange.add(name);
+        admin.pendingChangeDirect.add(name);
+        admin.pendingChange.add(state);
 
         if (!state.copy) {
           state.copy = clone(state.base);
         }
         state.copy[prop] = value;
-
-        if (!state.changed) {
-          markChanged(state);
+      } else {
+        if (state.copy && state.copy[prop] !== value) {
+          logger.log(`${name} restored`);
+          admin.pendingChangeDirect.delete(name);
+          admin.pendingChange.delete(state);
+          state.copy[prop] = value;
         }
       }
 
@@ -277,15 +269,19 @@ function createStore<T extends object>(
       const source = state.base;
       if (prop in source) {
         logger.log(`${name} changed`);
-        admin.pendingDirectChange.add(name);
+        admin.pendingChangeDirect.add(name);
+        admin.pendingChange.add(state);
 
         if (!state.copy) {
           state.copy = clone(state.base);
         }
         delete state.copy[prop];
-
-        if (!state.changed) {
-          markChanged(state);
+      } else {
+        if (state.copy && prop in state.copy) {
+          logger.log(`${name} restored`);
+          admin.pendingChangeDirect.delete(name);
+          admin.pendingChange.delete(state);
+          delete state.copy[prop];
         }
       }
 
@@ -383,22 +379,26 @@ function subscribeStore(store: Store, listener: SubscribeListener) {
   return () => admin.subscribeListeners.delete(listener);
 }
 
-function finalize(admin: StoreAdmin) {
-  admin.pendingChange.forEach((state) => {
-    if (state.changed && state.copy) {
-      state.base = state.copy;
-      delete state.copy;
-      state.changed = false;
-      state.expired = true;
+function handleChanged(state: State) {
+  if (state.copy) {
+    state.base = state.copy;
+    delete state.copy;
+    state.expired = true;
+    if (state.parent) {
+      handleChanged(state.parent);
     }
-  });
+  }
+}
+
+function finalize(admin: StoreAdmin) {
+  admin.pendingChange.forEach(handleChanged);
   admin.pendingChange.clear();
 
-  if (admin.subscribeListeners.size && admin.pendingDirectChange.size) {
-    const cloned = new Set(admin.pendingDirectChange);
+  if (admin.subscribeListeners.size && admin.pendingChangeDirect.size) {
+    const cloned = new Set(admin.pendingChangeDirect);
     admin.subscribeListeners.forEach((func) => func(cloned));
   }
-  admin.pendingDirectChange.clear();
+  admin.pendingChangeDirect.clear();
 }
 
 function hookStore<T extends Store>(store: T, options: HookOptions) {
