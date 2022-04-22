@@ -4,6 +4,18 @@ An easy store for react and hooks.
 
 Another version: [easystore](https://github.com/sky0014/easystore)
 
+# Feature
+
+- Simple, less than 500 lines, no more dependencies
+- Support multiple store
+- Support immutable
+- Support nested data
+- Support computed
+- Support sync/async actions
+- React render optimized
+- Easy to write, no boilerplate
+- Good type IntelliSense
+
 ## Install
 
 ```bash
@@ -44,7 +56,7 @@ class App {
     // call other action
     this.add();
     await delay(1000);
-    // produce self
+    // modify data directly with produce in async action
     produce(() => {
       this.nest.a.count += 100;
     });

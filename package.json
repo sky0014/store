@@ -1,6 +1,6 @@
 {
   "name": "@sky0014/store",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "An easy store for react and hooks.",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -15,7 +15,10 @@
   "keywords": [
     "react",
     "hooks",
-    "store"
+    "multiple",
+    "store",
+    "immutable",
+    "computed"
   ],
   "author": "sky0014 <sky-wang@qq.com>",
   "bugs": {
@@ -35,5 +38,8 @@
   "browserslist": [
     "chrome 55",
     "firefox 53"
+  ],
+  "files": [
+    "lib"
   ]
 }

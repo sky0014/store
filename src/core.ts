@@ -377,7 +377,7 @@ function latest(state: State) {
   return state.copy || state.base;
 }
 
-function subscribe(store: Store, listener: SubscribeListener) {
+function subscribeStore(store: Store, listener: SubscribeListener) {
   const admin = store[ADMIN];
   admin.subscribeListeners.add(listener);
   return () => admin.subscribeListeners.delete(listener);
@@ -428,4 +428,4 @@ function hookStore<T extends Store>(store: T, options: HookOptions) {
   return { proxy: proxy as any as T, revoke };
 }
 
-export { Produce, Store, createStore, subscribe, hookStore };
+export { Produce, Store, createStore, subscribeStore, hookStore };

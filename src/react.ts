@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef } from "react";
-import { hookStore, Store, subscribe } from "./core";
+import { hookStore, Store, subscribeStore } from "./core";
 
 interface StoreRef<T> {
   store: T;
@@ -16,7 +16,7 @@ export function useStore<T extends Store>(store: T) {
     const { proxy, revoke } = hookStore(store, {
       onDepend: (name) => storeRef.current!.map.add(name),
     });
-    const unsubscribe = subscribe(proxy, (names) => {
+    const unsubscribe = subscribeStore(proxy, (names) => {
       for (let name of names) {
         if (storeRef.current!.map.has(name)) {
           forceUpdate();

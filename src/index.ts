@@ -1,2 +1,2 @@
-export { Produce, createStore } from "./core";
+export { Produce, createStore, subscribeStore } from "./core";
 export { useStore } from "./react";
