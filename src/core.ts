@@ -1,12 +1,12 @@
 import { createLogger } from "@sky0014/logger";
 import { clone, isAsyncAction } from "./util";
 
-const name = "store";
+const LIB_NAME = "store";
 
 const logger = createLogger();
 logger.initLogger({
   enable: false,
-  prefix: name,
+  prefix: LIB_NAME,
 });
 
 interface CreateStoreOptions {
@@ -142,6 +142,9 @@ function createStore<T extends object>(
     prop: string,
     value?: any
   ) => {
+    const name = `${state.name}.${prop}`;
+    logger.log(`${isDelete ? "delete" : "set"} ${name}`);
+
     const source = state.base;
     if (isDelete ? prop in source : source[prop] !== value) {
       logger.log(`${name} changed`);
@@ -253,9 +256,6 @@ function createStore<T extends object>(
         return false;
       }
 
-      const name = `${state.name}.${prop}`;
-      logger.log(`set ${name}`);
-
       setData(false, state, prop, value);
 
       return true;
@@ -281,9 +281,6 @@ function createStore<T extends object>(
         die(`symbol in store not supported!`);
         return false;
       }
-
-      const name = `${state.name}.${prop}`;
-      logger.log(`delete ${name}`);
 
       setData(true, state, prop);
 
@@ -361,7 +358,7 @@ function makeComputedKey(prop: string) {
 }
 
 function die(msg: string) {
-  throw new Error(`[${name}] ${msg}`);
+  throw new Error(`[${LIB_NAME}] ${msg}`);
 }
 
 function latest(state: State) {
@@ -375,13 +372,15 @@ function subscribeStore(store: Store, listener: SubscribeListener) {
 }
 
 function handleChanged(state: State) {
+  state.expired = true;
+
   if (state.copy) {
     state.base = state.copy;
     delete state.copy;
-    state.expired = true;
-    if (state.parent) {
-      handleChanged(state.parent);
-    }
+  }
+
+  if (state.parent) {
+    handleChanged(state.parent);
   }
 }
 
@@ -398,6 +397,7 @@ function finalize(admin: StoreAdmin) {
 
 function hookStore<T extends Store>(store: T, options: HookOptions) {
   const admin = store[ADMIN];
+  const map = new WeakMap();
 
   const handle: ProxyHandler<any> = {
     get(target, prop) {
@@ -414,7 +414,12 @@ function hookStore<T extends Store>(store: T, options: HookOptions) {
         return value;
       }
 
-      return new Proxy(value, handle);
+      // 缓存起来，防止每次都生成新对象，造成react hooks dependencies不一致
+      if (!map.has(value)) {
+        map.set(value, new Proxy(value, handle));
+      }
+
+      return map.get(value);
     },
   };
 
