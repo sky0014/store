@@ -63,26 +63,28 @@ class App {
   }
 }
 
-export default createStore(new App(), { debug: true, storeName: "App" });
+export const [app, useApp] = createStore(new App(), {
+  debug: true,
+  storeName: "App",
+});
 
 // App.tsx
 import "./App.css";
-import app from "./store/app";
 import { useEffect } from "react";
-import { useStore } from "@sky0014/store";
+import { useApp } from "./store/app";
 
 function App() {
-  const appStore = useStore(app);
+  const app = useApp();
 
   useEffect(() => {
     console.log("nest changed!");
-  }, [appStore.nest]);
+  }, [app.nest]);
 
   return (
     <>
-      <div>{appStore.count}</div>
-      <div>{appStore.nest.a.doubleCount}</div>
-      <button onClick={appStore.add}> Add </button>
+      <div>{app.count}</div>
+      <div>{app.nest.a.doubleCount}</div>
+      <button onClick={app.add}> Add </button>
     </>
   );
 }
