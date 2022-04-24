@@ -4,7 +4,7 @@ import { hookStore, Store, subscribeStore } from "./core";
 interface StoreRef<T> {
   store: T;
   revoke: () => void;
-  map: Set<string>;
+  map: Map<string, boolean>;
   unsubscribe: () => boolean;
 }
 
@@ -14,7 +14,7 @@ export function useStore<T extends Store>(store: T) {
 
   if (!storeRef.current) {
     const { proxy, revoke } = hookStore(store, {
-      onDepend: (name) => storeRef.current!.map.add(name),
+      onDepend: (name) => storeRef.current!.map.set(name, true),
     });
     const unsubscribe = subscribeStore(proxy, (names) => {
       for (let name of names) {
@@ -28,7 +28,7 @@ export function useStore<T extends Store>(store: T) {
     storeRef.current = {
       store: proxy,
       revoke,
-      map: new Set(),
+      map: new Map(),
       unsubscribe,
     };
   }
