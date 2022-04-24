@@ -1,4 +1,5 @@
 import { createLogger } from "@sky0014/logger";
+import { useStore } from "./react";
 import { clone, isAsyncAction } from "./util";
 
 const LIB_NAME = "store";
@@ -74,7 +75,7 @@ interface HookOptions {
 function createStore<T extends object>(
   target: T,
   options: CreateStoreOptions = {}
-): StoreWrap<T> {
+): [StoreWrap<T>, () => StoreWrap<T>] {
   let { debug, storeName } = options;
 
   if (debug) {
@@ -353,7 +354,10 @@ function createStore<T extends object>(
     }
   });
 
-  return proxy as any;
+  const store: StoreWrap<T> = proxy as any;
+  const useTargetStore = () => useStore(store);
+
+  return [store, useTargetStore];
 }
 
 function makeComputedKey(prop: string) {
