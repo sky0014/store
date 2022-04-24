@@ -342,6 +342,10 @@ function createStore<T extends object>(
           // @ts-ignore
           target[key] = (...args: any[]) => {
             logger.log(`call action: ${storeName}.${key}`, args);
+            if (admin.allowChange) {
+              // already in produce or other sync actions
+              return func(...args);
+            }
             return produce(() => func(...args));
           };
         }
