@@ -6,7 +6,7 @@ Another single store library: [easystore](https://github.com/sky0014/easystore)
 
 # Feature
 
-- Simple, less than 500 lines, almost no dependencies
+- Simple, less code, almost no dependencies
 - Support multiple stores
 - Support immutable
 - Support nested data

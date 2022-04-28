@@ -2,7 +2,13 @@ export function clone<T>(obj: T) {
   if (Array.isArray(obj)) {
     return [...obj];
   }
-  return { ...obj };
+  // support prototype clone
+  const cloned = { ...obj };
+  const proto = Object.getPrototypeOf(obj);
+  if (proto !== Object.prototype) {
+    Object.setPrototypeOf(cloned, proto);
+  }
+  return cloned;
 }
 
 const asyncReg = /^function[^{]*?{\s*return\s+[^(,;\s]+\(/;

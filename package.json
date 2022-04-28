@@ -1,11 +1,11 @@
 {
   "name": "@sky0014/store",
-  "version": "1.0.11",
+  "version": "1.0.18",
   "description": "An easy store for react and hooks.",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "scripts": {
-    "build": "tsc --declaration",
+    "build": "rimraf lib && rollup -c",
     "pub": "npm run build && npm publish --registry=https://registry.npmjs.org --access public"
   },
   "repository": {
@@ -29,7 +29,13 @@
     "react": ">=16.8.3"
   },
   "devDependencies": {
+    "@rollup/plugin-commonjs": "^22.0.0",
+    "@rollup/plugin-node-resolve": "^13.2.1",
+    "@rollup/plugin-typescript": "^8.3.2",
     "@types/react": "^18.0.5",
+    "rimraf": "^3.0.2",
+    "rollup": "^2.70.2",
+    "rollup-plugin-dts": "^4.2.1",
     "typescript": "^4.5.5"
   },
   "dependencies": {

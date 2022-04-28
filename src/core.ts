@@ -1,5 +1,5 @@
+import { useEffect, useReducer, useRef } from "react";
 import { createLogger } from "@sky0014/logger";
-import { useStore } from "./react";
 import { clone, isAsyncAction } from "./util";
 
 const LIB_NAME = "store";
@@ -30,6 +30,7 @@ interface State {
   copy?: any;
   expired?: boolean;
   revoke?: () => void;
+  isRoot?: boolean;
 }
 
 interface SubscribeListener {
@@ -48,7 +49,7 @@ interface StoreAdmin {
 }
 
 interface Produce {
-  (func: () => any): any;
+  (produce: () => any): any;
 }
 
 const STATE = Symbol("state");
@@ -70,6 +71,13 @@ type StoreWrap<T> = {
 
 interface HookOptions {
   onDepend?: (name: string) => void;
+}
+
+interface StoreRef<T> {
+  store: T;
+  revoke: () => void;
+  map: Map<string, boolean>;
+  unsubscribe: () => boolean;
 }
 
 function createStore<T extends object>(
@@ -140,13 +148,34 @@ function createStore<T extends object>(
   const setData = (
     isDelete: boolean,
     state: State,
-    prop: string,
+    prop: string | symbol,
     value?: any
   ) => {
+    if (!admin.allowChange) {
+      die("Do not allowed modify data directly, you should do it in actions!");
+      return false;
+    }
+
+    if (typeof prop === "symbol") {
+      die(`symbol in store not supported!`);
+      return false;
+    }
+
     const name = `${state.name}.${prop}`;
     logger.log(`${isDelete ? "delete" : "set"} ${name}`);
 
     const source = state.base;
+    const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
+    if (computed) {
+      if (isDelete) {
+        // delete computed do nothing
+        return true;
+      }
+      // set computed just execute
+      source[prop] = value;
+      return true;
+    }
+
     if (isDelete ? prop in source : source[prop] !== value) {
       logger.log(`${name} changed`);
       admin.pendingChangeDirect.add(name);
@@ -181,6 +210,8 @@ function createStore<T extends object>(
         }
       }
     }
+
+    return true;
   };
 
   const handle: ProxyHandler<State> = {
@@ -197,8 +228,12 @@ function createStore<T extends object>(
         return die(`symbol in store not supported!`);
       }
 
+      if (prop === "toJSON") {
+        return () => latest(state);
+      }
+
       const name = `${state.name}.${prop}`;
-      const computed = !state.parent && admin.computed[makeComputedKey(prop)];
+      const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
       const source = latest(state);
       let value: any;
 
@@ -218,12 +253,11 @@ function createStore<T extends object>(
           // 未改变，将当前的依赖作为其他collectTarget的依赖
           computed.deps.forEach(reportSubscribe);
         }
-        value = computed.value;
-      } else {
-        value = source[prop];
+        return computed.value;
       }
 
-      if (!computed && typeof value !== "function") {
+      value = source[prop];
+      if (typeof value !== "function") {
         // computed、action不用subscribe
         reportSubscribe(name);
       }
@@ -245,21 +279,7 @@ function createStore<T extends object>(
     },
 
     set(state, prop, value) {
-      if (!admin.allowChange) {
-        die(
-          "Do not allowed modify data directly, you should do it in actions!"
-        );
-        return false;
-      }
-
-      if (typeof prop === "symbol") {
-        die(`symbol in store not supported!`);
-        return false;
-      }
-
-      setData(false, state, prop, value);
-
-      return true;
+      return setData(false, state, prop, value);
     },
 
     getPrototypeOf(state) {
@@ -271,21 +291,7 @@ function createStore<T extends object>(
     },
 
     deleteProperty(state, prop) {
-      if (!admin.allowChange) {
-        die(
-          "Do not allowed modify data directly, you should do it in actions!"
-        );
-        return false;
-      }
-
-      if (typeof prop === "symbol") {
-        die(`symbol in store not supported!`);
-        return false;
-      }
-
-      setData(true, state, prop);
-
-      return true;
+      return setData(true, state, prop);
     },
 
     ownKeys(state) {
@@ -297,21 +303,16 @@ function createStore<T extends object>(
   const state: State = {
     name: storeName,
     base: target,
+    isRoot: true,
   };
   const { proxy, revoke } = Proxy.revocable(state, handle);
   state.revoke = revoke;
 
-  const produce = (func: () => any) => {
-    admin.allowChange = true;
-    const result = func();
-    admin.allowChange = false;
-    finalize(admin);
-    return result;
-  };
+  const produce: Produce = (produceFunc: () => any) =>
+    _internalProduce(proxy as any, produceFunc);
 
-  const descObj = Object.getOwnPropertyDescriptors(
-    Object.getPrototypeOf(target)
-  );
+  const proto = Object.getPrototypeOf(target);
+  const descObj = Object.getOwnPropertyDescriptors(proto);
   Object.keys(descObj).forEach((key) => {
     if (key === "constructor") {
       return;
@@ -334,14 +335,12 @@ function createStore<T extends object>(
         const func = desc.value.bind(proxy);
         // use original desc.value, func.toString() maybe [native code]
         if (isAsyncAction(desc.value)) {
-          // @ts-ignore
-          target[key] = (...args: any[]) => {
+          proto[key] = (...args: any[]) => {
             logger.log(`call async action: ${storeName}.${key}`, args);
             return func(produce, ...args);
           };
         } else {
-          // @ts-ignore
-          target[key] = (...args: any[]) => {
+          proto[key] = (...args: any[]) => {
             logger.log(`call action: ${storeName}.${key}`, args);
             if (admin.allowChange) {
               // already in produce or other sync actions
@@ -435,4 +434,64 @@ function hookStore<T extends Store>(store: T, options: HookOptions) {
   return { proxy: proxy as any as T, revoke };
 }
 
-export { Produce, Store, createStore, subscribeStore, hookStore };
+/** @internal */
+function _internalProduce(store: Store, produce: () => any) {
+  const admin = store[ADMIN];
+  admin.allowChange = true;
+  const result = produce();
+  admin.allowChange = false;
+  finalize(admin);
+  return result;
+}
+
+function useStore<T extends Store>(store: T) {
+  const storeRef = useRef<StoreRef<T>>();
+  const [, forceUpdate] = useReducer((x) => x + 1, 0);
+
+  if (!storeRef.current) {
+    const { proxy, revoke } = hookStore(store, {
+      onDepend: (name) => storeRef.current!.map.set(name, true),
+    });
+    const unsubscribe = subscribeStore(proxy, (names) => {
+      for (let name of names) {
+        if (storeRef.current!.map.has(name)) {
+          forceUpdate();
+          break;
+        }
+      }
+    });
+
+    storeRef.current = {
+      store: proxy,
+      revoke,
+      map: new Map(),
+      unsubscribe,
+    };
+  }
+
+  // 每次render清理，重新收集依赖
+  storeRef.current.map.clear();
+
+  useEffect(() => {
+    return () => {
+      // unmount清理
+      storeRef.current?.unsubscribe();
+      storeRef.current?.revoke();
+      storeRef.current = undefined;
+    };
+  }, []);
+
+  return storeRef.current.store;
+}
+
+export {
+  Produce,
+  Store,
+  StoreWrap,
+  createStore,
+  subscribeStore,
+  hookStore,
+  useStore,
+  logger,
+  _internalProduce,
+};
