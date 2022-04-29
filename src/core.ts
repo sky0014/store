@@ -176,7 +176,7 @@ function createStore<T extends object>(
       }
       // set computed
       if (!computed.setter) {
-        die(`missing setter of ${prop}`);
+        die(`missing setter of "${prop}"`);
       }
       computed.setter(value);
       return true;
@@ -298,6 +298,11 @@ function createStore<T extends object>(
       return Object.getPrototypeOf(state.base);
     },
 
+    setPrototypeOf() {
+      die(`You should not do "setPrototypeOf" of a store!`);
+      return false;
+    },
+
     has(state, prop) {
       return prop in latest(state);
     },
@@ -308,6 +313,23 @@ function createStore<T extends object>(
 
     ownKeys(state) {
       return Object.getOwnPropertyNames(latest(state));
+    },
+
+    isExtensible() {
+      return false;
+    },
+
+    defineProperty() {
+      die(`You should not do "defineProperty" of a store!`);
+      return false;
+    },
+
+    getOwnPropertyDescriptor(state, prop) {
+      const desc = Object.getOwnPropertyDescriptor(latest(state), prop);
+      if (!desc) return desc;
+      // May cause error: TypeError: 'getOwnPropertyDescriptor' on proxy: trap reported non-configurability for property 'length' which is either non-existent or configurable in the proxy target
+      // Workaround: set configurable=true
+      return { ...desc, configurable: true };
     },
   };
 
