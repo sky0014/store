@@ -18,6 +18,7 @@ interface CreateStoreOptions {
 interface Computed {
   name: string;
   getter: () => any;
+  setter: (value: any) => any;
   value: any;
   changed: boolean;
   deps: Set<string>;
@@ -94,6 +95,10 @@ function createStore<T extends object>(
     storeName = target.constructor.name;
   }
 
+  const die = (msg: string) => {
+    throw new Error(`[${LIB_NAME}] [${storeName}] ${msg}`);
+  };
+
   const admin: StoreAdmin = {
     subscribeMap: {},
     computed: {},
@@ -157,25 +162,42 @@ function createStore<T extends object>(
     }
 
     if (typeof prop === "symbol") {
-      die(`symbol in store not supported!`);
       return false;
     }
 
     const name = `${state.name}.${prop}`;
     logger.log(`${isDelete ? "delete" : "set"} ${name}`);
 
-    const source = state.base;
     const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
     if (computed) {
       if (isDelete) {
         // delete computed do nothing
         return true;
       }
-      // set computed just execute
-      source[prop] = value;
+      // set computed
+      if (!computed.setter) {
+        die(`missing setter of ${prop}`);
+      }
+      computed.setter(value);
       return true;
     }
 
+    // handle computed subscribe
+    // compare to latest, so that computed value can be used immediately
+    const latestSource = latest(state);
+    if (isDelete ? prop in latestSource : latestSource[prop] !== value) {
+      // changed
+      const subscribes = admin.subscribeMap[name];
+      if (subscribes) {
+        Object.keys(subscribes).forEach(
+          (key) => (subscribes[key].changed = true)
+        );
+      }
+    }
+
+    // handle state
+    // compare to base & copy, will be handled when finalize
+    const source = state.base;
     if (isDelete ? prop in source : source[prop] !== value) {
       logger.log(`${name} changed`);
       admin.pendingChangeDirect.add(name);
@@ -185,13 +207,6 @@ function createStore<T extends object>(
         state.copy = clone(state.base);
       }
       isDelete ? delete state.copy[prop] : (state.copy[prop] = value);
-
-      const subscribes = admin.subscribeMap[name];
-      if (subscribes) {
-        Object.keys(subscribes).forEach(
-          (key) => (subscribes[key].changed = true)
-        );
-      }
     } else {
       if (
         state.copy &&
@@ -201,13 +216,6 @@ function createStore<T extends object>(
         admin.pendingChangeDirect.delete(name);
         admin.pendingChange.delete(state);
         isDelete ? delete state.copy[prop] : (state.copy[prop] = value);
-
-        const subscribes = admin.subscribeMap[name];
-        if (subscribes) {
-          Object.keys(subscribes).forEach(
-            (key) => (subscribes[key].changed = false)
-          );
-        }
       }
     }
 
@@ -224,17 +232,21 @@ function createStore<T extends object>(
         return admin;
       }
 
-      if (typeof prop === "symbol") {
-        return die(`symbol in store not supported!`);
-      }
-
       if (prop === "toJSON") {
         return () => latest(state);
       }
 
+      const source = latest(state);
+
+      if (typeof prop === "symbol") {
+        // maybe some internal symbol such as: Symbol.toStringTag
+        // just return it
+        return source[prop];
+      }
+
       const name = `${state.name}.${prop}`;
       const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
-      const source = latest(state);
+
       let value: any;
 
       if (computed) {
@@ -311,6 +323,13 @@ function createStore<T extends object>(
   const produce: Produce = (produceFunc: () => any) =>
     _internalProduce(proxy as any, produceFunc);
 
+  // check symbol
+  const symbols = Object.getOwnPropertySymbols(target);
+  if (symbols.length) {
+    logger.warn("checked symbol in store:", symbols);
+    die("symbol in store not supported!");
+  }
+
   const proto = Object.getPrototypeOf(target);
   const descObj = Object.getOwnPropertyDescriptors(proto);
   Object.keys(descObj).forEach((key) => {
@@ -325,6 +344,7 @@ function createStore<T extends object>(
       admin.computed[name] = {
         name,
         getter: desc.get.bind(proxy),
+        setter: desc.set?.bind(proxy),
         value: undefined,
         changed: true,
         deps: new Set(),
@@ -361,10 +381,6 @@ function createStore<T extends object>(
 
 function makeComputedKey(prop: string) {
   return "@" + prop;
-}
-
-function die(msg: string) {
-  throw new Error(`[${LIB_NAME}] ${msg}`);
 }
 
 function latest(state: State) {

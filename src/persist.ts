@@ -111,14 +111,14 @@ export async function persist<T extends Record<string, any>>(
     storeProps.forEach((prop) => (data[prop] = store[prop]));
     hasChanged = false;
     isStoreing = true;
-    logger.log("set storage: ", data);
-
     const storeData: StoreData = {
       __store__: true,
       ver: options.ver,
       data,
     };
-    await options.storage.setItem(options.key, JSON.stringify(storeData));
+    const dataStr = JSON.stringify(storeData);
+    logger.log("set storage: ", dataStr);
+    await options.storage.setItem(options.key, dataStr);
     isStoreing = false;
     checkStore();
   };
