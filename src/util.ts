@@ -29,3 +29,7 @@ export function isAsyncAction(func: Function) {
 
   return false;
 }
+
+export function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

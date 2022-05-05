@@ -4,6 +4,7 @@ import {
   _internalProduce,
   logger as _logger,
 } from "./core";
+import { delay } from "./util";
 
 type GetProp<T> = {
   [K in keyof T]: T[K] extends Function ? never : K;
@@ -36,41 +37,30 @@ export async function persist<T extends Record<string, any>>(
   options: PersistOptions<T>
 ) {
   const logger = _logger.makeLogger("persist", options.key);
-  // 所有属性
-  const allProps = Object.getOwnPropertyNames(store);
-  // 要存储的属性
-  let storeProps = new Set(allProps);
+
+  let filterProps: (prop: string) => boolean;
 
   if (options.whiteList?.length) {
     // 白名单（优先）
     const whiteList = options.whiteList as string[];
-    storeProps = new Set(
-      allProps.filter((prop) => whiteList.indexOf(prop) !== -1)
-    );
+    filterProps = (prop) => whiteList.indexOf(prop) !== -1;
   } else if (options.blackList?.length) {
     // 黑名单
     const blackList = options.blackList as string[];
-    storeProps = new Set(
-      allProps.filter((prop) => blackList.indexOf(prop) === -1)
-    );
+    filterProps = (prop) => blackList.indexOf(prop) === -1;
   }
 
-  // 默认全部监听
-  let shouldStore: (names: Set<string>) => boolean = () => true;
-  // 有黑白名单的情况下进行选择过滤
-  if (storeProps.size !== allProps.length) {
-    const map: Record<string, boolean> = {};
-    storeProps.forEach((prop) => (map[prop] = true));
-    shouldStore = (names) => {
-      for (let n of names) {
-        const prop = n.split(".")[1];
-        if (map[prop]) {
-          return true;
-        }
-      }
-      return false;
-    };
-  }
+  const getProps = () => {
+    // 所有属性
+    const allProps = Object.getOwnPropertyNames(store).filter(
+      (prop) => typeof store[prop] !== "function"
+    );
+    // 要存储的属性
+    const storeProps = new Set(
+      filterProps ? allProps.filter(filterProps) : allProps
+    );
+    return { allProps, storeProps };
+  };
 
   // 读取本地存储
   const stored = await options.storage.getItem(options.key);
@@ -83,34 +73,18 @@ export async function persist<T extends Record<string, any>>(
         throw new Error(`invalid store data: ${stored}`);
       }
       if (json.ver !== options.ver && options.onVerUpdate) {
-        json = options.onVerUpdate(json.ver, json);
+        json.data = options.onVerUpdate(json.ver, json.data);
       }
-      _internalProduce(store, () => {
-        storeProps.forEach((prop) => {
-          const val = json.data[prop];
-          if (val !== undefined) {
-            // @ts-ignore
-            store[prop] = val;
-          }
-        });
-      });
+      _internalProduce(store, () => Object.assign(store, json.data));
     } catch (e) {
-      logger.warn(`parse storage data error: `, e);
+      logger.warn(`read storage data error: `, e);
     }
   }
 
-  // 监听store变化
-  let hasChanged = false;
-  let isStoreing = false;
-  const checkStore = async () => {
-    if (!hasChanged || isStoreing) {
-      return;
-    }
-
+  const flush = async () => {
     const data: Record<string, any> = {};
+    const { storeProps } = getProps();
     storeProps.forEach((prop) => (data[prop] = store[prop]));
-    hasChanged = false;
-    isStoreing = true;
     const storeData: StoreData = {
       __store__: true,
       ver: options.ver,
@@ -119,14 +93,45 @@ export async function persist<T extends Record<string, any>>(
     const dataStr = JSON.stringify(storeData);
     logger.log("set storage: ", dataStr);
     await options.storage.setItem(options.key, dataStr);
+  };
+
+  let hasChanged = false;
+  let isStoreing = false;
+  const checkStore = async () => {
+    if (!hasChanged || isStoreing) {
+      return;
+    }
+
+    hasChanged = false;
+    isStoreing = true;
+    await flush();
+    await delay(200); // delay防止频繁set storage
     isStoreing = false;
     checkStore();
   };
 
+  // 监听store变化
   subscribeStore(store, (names) => {
-    if (storeProps.size && shouldStore(names)) {
+    const { allProps, storeProps } = getProps();
+
+    if (
+      storeProps.size &&
+      (allProps.length === storeProps.size || shouldStore(names, storeProps))
+    ) {
       hasChanged = true;
       checkStore();
     }
   });
+
+  return { flush };
+}
+
+function shouldStore(names: Set<string>, props: Set<string>) {
+  for (let n of names) {
+    const prop = n.split(".")[1];
+    if (props.has(prop)) {
+      return true;
+    }
+  }
+  return false;
 }
