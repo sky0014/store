@@ -30,7 +30,6 @@ interface State {
   base?: any;
   copy?: any;
   expired?: boolean;
-  revoke?: () => void;
   isRoot?: boolean;
 }
 
@@ -76,7 +75,6 @@ interface HookOptions {
 
 interface StoreRef<T> {
   store: T;
-  revoke: () => void;
   map: Map<string, boolean>;
   unsubscribe: () => boolean;
 }
@@ -134,20 +132,13 @@ function createStore<T extends object>(
 
     logger.log(`create proxy: ${name}`);
 
-    const { proxy, revoke } = Proxy.revocable(state, handle);
-    state.revoke = revoke;
-
-    return proxy;
+    return new Proxy(state, handle);
   };
 
   const cloneProxy = (state: State) => {
     logger.log(`clone proxy: ${state.name}`);
 
-    const { proxy, revoke } = Proxy.revocable(state, handle);
-    state.revoke && state.revoke();
-    state.revoke = revoke;
-
-    return proxy;
+    return new Proxy(state, handle);
   };
 
   const setData = (
@@ -339,8 +330,7 @@ function createStore<T extends object>(
     base: target,
     isRoot: true,
   };
-  const { proxy, revoke } = Proxy.revocable(state, handle);
-  state.revoke = revoke;
+  const proxy = new Proxy(state, handle);
 
   const produce: Produce = (produceFunc: () => any) =>
     _internalProduce(proxy as any, produceFunc);
@@ -439,7 +429,7 @@ function finalize(admin: StoreAdmin) {
   admin.pendingChangeDirect.clear();
 }
 
-function hookStore<T extends Store>(store: T, options: HookOptions) {
+function hookStore<T extends Store>(store: T, options: HookOptions): T {
   const admin = store[ADMIN];
   const map = new WeakMap();
 
@@ -467,9 +457,7 @@ function hookStore<T extends Store>(store: T, options: HookOptions) {
     },
   };
 
-  const { proxy, revoke } = Proxy.revocable(store, handle);
-
-  return { proxy: proxy as any as T, revoke };
+  return new Proxy(store, handle);
 }
 
 /** @internal */
@@ -487,10 +475,10 @@ function useStore<T extends Store>(store: T) {
   const [, forceUpdate] = useReducer((x) => x + 1, 0);
 
   if (!storeRef.current) {
-    const { proxy, revoke } = hookStore(store, {
+    const proxy = hookStore(store, {
       onDepend: (name) => storeRef.current!.map.set(name, true),
     });
-    const unsubscribe = subscribeStore(proxy, (names) => {
+    const unsubscribe = subscribeStore(store, (names) => {
       for (let name of names) {
         if (storeRef.current!.map.has(name)) {
           forceUpdate();
@@ -501,7 +489,6 @@ function useStore<T extends Store>(store: T) {
 
     storeRef.current = {
       store: proxy,
-      revoke,
       map: new Map(),
       unsubscribe,
     };
@@ -514,7 +501,6 @@ function useStore<T extends Store>(store: T) {
     return () => {
       // unmount清理
       storeRef.current?.unsubscribe();
-      storeRef.current?.revoke();
       storeRef.current = undefined;
     };
   }, []);

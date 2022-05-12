@@ -75,7 +75,14 @@ export async function persist<T extends Record<string, any>>(
       if (json.ver !== options.ver && options.onVerUpdate) {
         json.data = options.onVerUpdate(json.ver, json.data);
       }
-      _internalProduce(store, () => Object.assign(store, json.data));
+      _internalProduce(store, () => {
+        Object.keys(json.data).forEach((prop) => {
+          if (filterProps(prop)) {
+            // @ts-ignore
+            store[prop] = json.data[prop];
+          }
+        });
+      });
     } catch (e) {
       logger.warn(`read storage data error: `, e);
     }
