@@ -1,6 +1,5 @@
 import typescript from "@rollup/plugin-typescript";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
-import commonjs from "@rollup/plugin-commonjs";
 import dts from "rollup-plugin-dts";
 
 export default [
@@ -9,8 +8,8 @@ export default [
     output: {
       dir: "lib",
     },
-    external: ["react"],
-    plugins: [typescript(), nodeResolve(), commonjs()],
+    external: ["react", "@sky0014/logger"],
+    plugins: [nodeResolve(), typescript()],
   },
   {
     input: "src/index.ts",
