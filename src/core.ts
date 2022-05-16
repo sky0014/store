@@ -38,9 +38,7 @@ interface SubscribeListener {
 }
 
 interface StoreAdmin {
-  subscribeMap: Record<string, Record<string, Computed>>;
   computed: Record<string, Computed>;
-  collectTarget: Computed[];
   allowChange: boolean;
   pendingChange: Set<State>;
   pendingChangeDirect: Set<string>;
@@ -79,6 +77,11 @@ interface StoreRef<T> {
   unsubscribe: () => boolean;
 }
 
+// globals
+let createStoreCount = 0;
+let collectTarget: Computed[] = [];
+let subscribeMap: Record<string, Record<string, Computed>> = {};
+
 function createStore<T extends object>(
   target: T,
   options: CreateStoreOptions = {}
@@ -93,14 +96,15 @@ function createStore<T extends object>(
     storeName = target.constructor.name;
   }
 
+  // 赋予唯一name以便全局标识
+  storeName = `${storeName}@S${createStoreCount++}`;
+
   const die = (msg: string) => {
     throw new Error(`[${LIB_NAME}] [${storeName}] ${msg}`);
   };
 
   const admin: StoreAdmin = {
-    subscribeMap: {},
     computed: {},
-    collectTarget: [],
     allowChange: false,
     pendingChange: new Set(),
     pendingChangeDirect: new Set(),
@@ -108,12 +112,12 @@ function createStore<T extends object>(
   };
 
   const reportSubscribe = (name: string) => {
-    if (admin.collectTarget.length) {
-      if (!admin.subscribeMap[name]) {
-        admin.subscribeMap[name] = {};
+    if (collectTarget.length) {
+      if (!subscribeMap[name]) {
+        subscribeMap[name] = {};
       }
-      admin.collectTarget.forEach((val) => {
-        admin.subscribeMap[name][val.name] = val;
+      collectTarget.forEach((val) => {
+        subscribeMap[name][val.name] = val;
         val.deps.add(name);
       });
     }
@@ -178,7 +182,7 @@ function createStore<T extends object>(
     const latestSource = latest(state);
     if (isDelete ? prop in latestSource : latestSource[prop] !== value) {
       // changed
-      const subscribes = admin.subscribeMap[name];
+      const subscribes = subscribeMap[name];
       if (subscribes) {
         Object.keys(subscribes).forEach(
           (key) => (subscribes[key].changed = true)
@@ -244,14 +248,14 @@ function createStore<T extends object>(
         if (computed.changed) {
           // 如改变，则重新收集依赖
           for (let name of computed.deps) {
-            delete admin.subscribeMap[name][computed.name];
+            delete subscribeMap[name][computed.name];
           }
           computed.deps.clear();
 
-          admin.collectTarget.push(computed);
+          collectTarget.push(computed);
           computed.value = computed.getter();
           computed.changed = false;
-          admin.collectTarget.pop();
+          collectTarget.pop();
         } else {
           // 未改变，将当前的依赖作为其他collectTarget的依赖
           computed.deps.forEach(reportSubscribe);
