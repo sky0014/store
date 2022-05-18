@@ -26,13 +26,18 @@ npm install @sky0014/store
 
 ```typescript
 // store.ts
-import { createStore, Produce } from "@sky0014/store";
+import { createStore, Store, configStore } from "@sky0014/store";
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-class App {
+configStore({
+  debug: true,
+  useBatch: true, // if you use react>=18, don't need this
+});
+
+class App extends Store {
   // support nested data
   nest = {
     a: {
@@ -52,20 +57,20 @@ class App {
   }
 
   // async action
-  async addAsync(produce: Produce) {
+  async addAsync() {
     // call other action
     this.add();
     await delay(1000);
-    // modify data directly with produce in async action
-    produce(() => {
+    // modify data directly with internal `set` in async action
+    // `set` is the keyword, don't re-define it in store
+    this.set(() => {
       this.nest.a.count += 100;
     });
   }
 }
 
 export const [app, useApp] = createStore(new App(), {
-  debug: true,
-  storeName: "App",
+  storeName: "App", // customize your store name, used for debug info
 });
 
 // App.tsx

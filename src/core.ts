@@ -1,17 +1,32 @@
 import { useEffect, useReducer, useRef } from "react";
 import { createLogger } from "@sky0014/logger";
-import { clone, isAsyncAction } from "./util";
+import { clone } from "./util";
+import unstable_batchedUpdates from "unstable_batchedupdates";
 
 const LIB_NAME = "store";
 
+interface ConfigStoreOptions {
+  debug?: boolean;
+  useBatch?: boolean;
+}
+
+let storeOptions: ConfigStoreOptions = {
+  debug: false,
+  useBatch: true,
+};
+
 const logger = createLogger();
 logger.initLogger({
-  enable: false,
+  enable: storeOptions.debug,
   prefix: LIB_NAME,
 });
 
+function configStore(options: ConfigStoreOptions) {
+  Object.assign(storeOptions, options);
+  logger.setEnable(storeOptions.debug);
+}
+
 interface CreateStoreOptions {
-  debug?: boolean;
   storeName?: string;
 }
 
@@ -21,7 +36,7 @@ interface Computed {
   setter: (value: any) => any;
   value: any;
   changed: boolean;
-  deps: Set<string>;
+  deps: Map<string, Store>;
 }
 
 interface State {
@@ -43,7 +58,6 @@ interface StoreAdmin {
   pendingChange: Set<State>;
   pendingChangeDirect: Set<string>;
   subscribeListeners: Set<SubscribeListener>;
-  reportDepend?: (name: string) => void;
 }
 
 interface Produce {
@@ -53,44 +67,38 @@ interface Produce {
 const STATE = Symbol("state");
 const ADMIN = Symbol("admin");
 
-interface Store {
+class Store {
   [STATE]: State;
   [ADMIN]: StoreAdmin;
+  set: Produce;
 }
 
-type StoreWrap<T> = {
-  [K in keyof T]: T[K] extends (
-    arg0: any,
-    ...args: infer P1
-  ) => Promise<infer P2>
-    ? (...args: P1) => Promise<P2>
-    : T[K];
-} & Store;
+type Unsubscriber = () => boolean;
+type ReportDepend = (name: string, store: Store) => void;
 
 interface HookOptions {
-  onDepend?: (name: string) => void;
+  onDepend?: ReportDepend;
 }
 
 interface StoreRef<T> {
   store: T;
+  dependStores: Map<Store, Unsubscriber>;
   map: Map<string, boolean>;
-  unsubscribe: () => boolean;
+  unsubscribe: Unsubscriber;
 }
 
 // globals
 let createStoreCount = 0;
-let collectTarget: Computed[] = [];
-let subscribeMap: Record<string, Record<string, Computed>> = {};
+let computedTarget: Computed[] = [];
+let computedMap: Record<string, Record<string, Computed>> = {};
+let reportDepend: ReportDepend;
+let batchedUpdateList: Set<() => any> = new Set();
 
-function createStore<T extends object>(
+function createStore<T extends Store>(
   target: T,
   options: CreateStoreOptions = {}
-): [StoreWrap<T>, () => StoreWrap<T>] {
-  let { debug, storeName } = options;
-
-  if (debug) {
-    logger.setEnable(true);
-  }
+): [T, () => T] {
+  let { storeName } = options;
 
   if (!storeName) {
     storeName = target.constructor.name;
@@ -103,6 +111,10 @@ function createStore<T extends object>(
     throw new Error(`[${LIB_NAME}] [${storeName}] ${msg}`);
   };
 
+  if (target.set !== undefined) {
+    die(`set is a store keyword, DON'T use it!`);
+  }
+
   const admin: StoreAdmin = {
     computed: {},
     allowChange: false,
@@ -111,19 +123,20 @@ function createStore<T extends object>(
     subscribeListeners: new Set(),
   };
 
-  const reportSubscribe = (name: string) => {
-    if (collectTarget.length) {
-      if (!subscribeMap[name]) {
-        subscribeMap[name] = {};
+  const reportSubscribe = (name: string, store: Store) => {
+    // handle computed
+    if (computedTarget.length) {
+      if (!computedMap[name]) {
+        computedMap[name] = {};
       }
-      collectTarget.forEach((val) => {
-        subscribeMap[name][val.name] = val;
-        val.deps.add(name);
+      computedTarget.forEach((val) => {
+        computedMap[name][val.name] = val;
+        val.deps.set(name, store);
       });
     }
 
-    if (admin.reportDepend) {
-      admin.reportDepend(name);
+    if (reportDepend) {
+      reportDepend(name, store);
     }
   };
 
@@ -152,7 +165,9 @@ function createStore<T extends object>(
     value?: any
   ) => {
     if (!admin.allowChange) {
-      die("Do not allowed modify data directly, you should do it in actions!");
+      die(
+        "Do not allowed modify data directly, you should do it in set or actions!"
+      );
       return false;
     }
 
@@ -182,7 +197,7 @@ function createStore<T extends object>(
     const latestSource = latest(state);
     if (isDelete ? prop in latestSource : latestSource[prop] !== value) {
       // changed
-      const subscribes = subscribeMap[name];
+      const subscribes = computedMap[name];
       if (subscribes) {
         Object.keys(subscribes).forEach(
           (key) => (subscribes[key].changed = true)
@@ -247,18 +262,18 @@ function createStore<T extends object>(
       if (computed) {
         if (computed.changed) {
           // 如改变，则重新收集依赖
-          for (let name of computed.deps) {
-            delete subscribeMap[name][computed.name];
-          }
+          computed.deps.forEach(
+            (_, name) => delete computedMap[name][computed.name]
+          );
           computed.deps.clear();
 
-          collectTarget.push(computed);
+          computedTarget.push(computed);
           computed.value = computed.getter();
           computed.changed = false;
-          collectTarget.pop();
+          computedTarget.pop();
         } else {
           // 未改变，将当前的依赖作为其他collectTarget的依赖
-          computed.deps.forEach(reportSubscribe);
+          computed.deps.forEach((store, name) => reportSubscribe(name, store));
         }
         return computed.value;
       }
@@ -266,7 +281,7 @@ function createStore<T extends object>(
       value = source[prop];
       if (typeof value !== "function") {
         // computed、action不用subscribe
-        reportSubscribe(name);
+        reportSubscribe(name, store);
       }
 
       if (!value || typeof value !== "object") {
@@ -337,7 +352,9 @@ function createStore<T extends object>(
   const proxy = new Proxy(state, handle);
 
   const produce: Produce = (produceFunc: () => any) =>
-    _internalProduce(proxy as any, produceFunc);
+    internalProduce(proxy as any, produceFunc);
+
+  target.set = produce;
 
   // check symbol
   const symbols = Object.getOwnPropertySymbols(target);
@@ -363,33 +380,25 @@ function createStore<T extends object>(
         setter: desc.set?.bind(proxy),
         value: undefined,
         changed: true,
-        deps: new Set(),
+        deps: new Map(),
       };
     } else {
       // handle actions
       if (typeof desc.value === "function") {
         const func = desc.value.bind(proxy);
-        // use original desc.value, func.toString() maybe [native code]
-        if (isAsyncAction(desc.value)) {
-          proto[key] = (...args: any[]) => {
-            logger.log(`call async action: ${storeName}.${key}`, args);
-            return func(produce, ...args);
-          };
-        } else {
-          proto[key] = (...args: any[]) => {
-            logger.log(`call action: ${storeName}.${key}`, args);
-            if (admin.allowChange) {
-              // already in produce or other sync actions
-              return func(...args);
-            }
-            return produce(() => func(...args));
-          };
-        }
+        proto[key] = (...args: any[]) => {
+          logger.log(`call action: ${storeName}.${key}`, args);
+          if (admin.allowChange) {
+            // already in produce or other actions
+            return func(...args);
+          }
+          return produce(() => func(...args));
+        };
       }
     }
   });
 
-  const store: StoreWrap<T> = proxy as any;
+  const store = proxy as any as T;
   const useTargetStore = () => useStore(store);
 
   return [store, useTargetStore];
@@ -428,13 +437,24 @@ function finalize(admin: StoreAdmin) {
 
   if (admin.subscribeListeners.size && admin.pendingChangeDirect.size) {
     const cloned = new Set(admin.pendingChangeDirect);
-    admin.subscribeListeners.forEach((func) => func(cloned));
+    const clonedListeners = new Set(admin.subscribeListeners);
+    clonedListeners.forEach((func) => func(cloned));
   }
   admin.pendingChangeDirect.clear();
+
+  if (batchedUpdateList.size) {
+    if (storeOptions.useBatch) {
+      unstable_batchedUpdates(() => {
+        batchedUpdateList.forEach((func) => func());
+      });
+    } else {
+      batchedUpdateList.forEach((func) => func());
+    }
+    batchedUpdateList.clear();
+  }
 }
 
 function hookStore<T extends Store>(store: T, options: HookOptions): T {
-  const admin = store[ADMIN];
   const map = new WeakMap();
 
   const handle: ProxyHandler<any> = {
@@ -443,10 +463,10 @@ function hookStore<T extends Store>(store: T, options: HookOptions): T {
         return target[prop];
       }
 
-      const temp = admin.reportDepend;
-      admin.reportDepend = options.onDepend;
+      const temp = reportDepend;
+      reportDepend = options.onDepend;
       const value = target[prop];
-      admin.reportDepend = temp;
+      reportDepend = temp;
 
       if (!value || typeof value !== "object") {
         return value;
@@ -464,8 +484,7 @@ function hookStore<T extends Store>(store: T, options: HookOptions): T {
   return new Proxy(store, handle);
 }
 
-/** @internal */
-function _internalProduce(store: Store, produce: () => any) {
+function internalProduce(store: Store, produce: () => any) {
   const admin = store[ADMIN];
   admin.allowChange = true;
   const result = produce();
@@ -479,20 +498,37 @@ function useStore<T extends Store>(store: T) {
   const [, forceUpdate] = useReducer((x) => x + 1, 0);
 
   if (!storeRef.current) {
-    const proxy = hookStore(store, {
-      onDepend: (name) => storeRef.current!.map.set(name, true),
-    });
-    const unsubscribe = subscribeStore(store, (names) => {
+    const checkUpdate: SubscribeListener = (names) => {
+      if (!storeRef.current) {
+        return;
+      }
+
       for (let name of names) {
-        if (storeRef.current!.map.has(name)) {
-          forceUpdate();
+        if (storeRef.current.map.has(name)) {
+          batchedUpdateList.add(forceUpdate);
           break;
         }
       }
+    };
+
+    const proxy = hookStore(store, {
+      onDepend: (name, store2) => {
+        if (!storeRef.current) {
+          return;
+        }
+
+        storeRef.current.map.set(name, true);
+        if (store2 !== store && !storeRef.current.dependStores.has(store2)) {
+          const unsubscribe = subscribeStore(store2, checkUpdate);
+          storeRef.current.dependStores.set(store2, unsubscribe);
+        }
+      },
     });
+    const unsubscribe = subscribeStore(store, checkUpdate);
 
     storeRef.current = {
       store: proxy,
+      dependStores: new Map(),
       map: new Map(),
       unsubscribe,
     };
@@ -500,11 +536,17 @@ function useStore<T extends Store>(store: T) {
 
   // 每次render清理，重新收集依赖
   storeRef.current.map.clear();
+  // 清理依赖store
+  if (storeRef.current.dependStores.size) {
+    storeRef.current.dependStores.forEach((unsubscribe) => unsubscribe());
+    storeRef.current.dependStores.clear();
+  }
 
   useEffect(() => {
     return () => {
       // unmount清理
       storeRef.current?.unsubscribe();
+      storeRef.current?.dependStores.forEach((unsubscribe) => unsubscribe());
       storeRef.current = undefined;
     };
   }, []);
@@ -515,11 +557,11 @@ function useStore<T extends Store>(store: T) {
 export {
   Produce,
   Store,
-  StoreWrap,
   createStore,
   subscribeStore,
   hookStore,
   useStore,
+  configStore,
   logger,
-  _internalProduce,
+  internalProduce,
 };

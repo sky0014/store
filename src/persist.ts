@@ -1,8 +1,8 @@
 import {
-  StoreWrap,
   subscribeStore,
-  _internalProduce,
+  internalProduce,
   logger as _logger,
+  Store,
 } from "./core";
 import { delay } from "./util";
 
@@ -32,8 +32,8 @@ interface StoreData {
   data: any;
 }
 
-export async function persist<T extends Record<string, any>>(
-  store: StoreWrap<T>,
+export async function persist<T extends Store>(
+  store: T,
   options: PersistOptions<T>
 ) {
   const logger = _logger.makeLogger("persist", options.key);
@@ -53,7 +53,7 @@ export async function persist<T extends Record<string, any>>(
   const getProps = () => {
     // 所有属性
     const allProps = Object.getOwnPropertyNames(store).filter(
-      (prop) => typeof store[prop] !== "function"
+      (prop) => typeof (store as any)[prop] !== "function"
     );
     // 要存储的属性
     const storeProps = new Set(
@@ -75,7 +75,7 @@ export async function persist<T extends Record<string, any>>(
       if (json.ver !== options.ver && options.onVerUpdate) {
         json.data = options.onVerUpdate(json.ver, json.data);
       }
-      _internalProduce(store, () => {
+      internalProduce(store, () => {
         Object.keys(json.data).forEach((prop) => {
           if (filterProps(prop)) {
             // @ts-ignore
@@ -91,7 +91,7 @@ export async function persist<T extends Record<string, any>>(
   const flush = async () => {
     const data: Record<string, any> = {};
     const { storeProps } = getProps();
-    storeProps.forEach((prop) => (data[prop] = store[prop]));
+    storeProps.forEach((prop) => (data[prop] = (store as any)[prop]));
     const storeData: StoreData = {
       __store__: true,
       ver: options.ver,
