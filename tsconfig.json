@@ -11,7 +11,7 @@
     "outDir": "lib",
     "moduleResolution": "node",
     "resolveJsonModule": true,
-    "lib": ["ES2015", "ES2017"],
+    "lib": ["ES2015", "ES2017", "DOM"],
     "downlevelIteration": true,
     "stripInternal": true
   },
