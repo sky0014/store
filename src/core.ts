@@ -93,6 +93,7 @@ let computedTarget: Computed[] = [];
 let computedMap: Record<string, Record<string, Computed>> = {};
 let reportDepend: ReportDepend;
 let batchedUpdateList: Set<() => any> = new Set();
+let batchedUpdateScheduled = false;
 
 function createStore<T extends Store>(
   target: T,
@@ -442,15 +443,23 @@ function finalize(admin: StoreAdmin) {
   }
   admin.pendingChangeDirect.clear();
 
-  if (batchedUpdateList.size) {
-    if (storeOptions.useBatch) {
-      unstable_batchedUpdates(() => {
-        batchedUpdateList.forEach((func) => func());
-      });
-    } else {
-      batchedUpdateList.forEach((func) => func());
-    }
-    batchedUpdateList.clear();
+  // 延迟更新，可以合并多个同步的action，减少不必要渲染
+  if (!batchedUpdateScheduled && batchedUpdateList.size) {
+    batchedUpdateScheduled = true;
+    Promise.resolve().then(() => {
+      batchedUpdateScheduled = false;
+
+      const list = new Set(batchedUpdateList);
+      batchedUpdateList.clear();
+
+      if (storeOptions.useBatch) {
+        unstable_batchedUpdates(() => {
+          list.forEach((func) => func());
+        });
+      } else {
+        list.forEach((func) => func());
+      }
+    });
   }
 }
 
