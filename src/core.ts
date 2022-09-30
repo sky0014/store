@@ -75,6 +75,7 @@ class Store {
 
 type Unsubscriber = () => boolean;
 type ReportDepend = (name: string, store: Store) => void;
+type NoSet<T> = Omit<T, "set">;
 
 interface HookOptions {
   onDepend?: ReportDepend;
@@ -98,7 +99,7 @@ let batchedUpdateScheduled = false;
 function createStore<T extends Store>(
   target: T,
   options: CreateStoreOptions = {}
-): [T, () => T] {
+): [NoSet<T>, () => NoSet<T>] {
   let { storeName } = options;
 
   if (!storeName) {
