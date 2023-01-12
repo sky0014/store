@@ -1,6 +1,28 @@
 /** @type {import('ts-jest/dist/types').InitialOptionsTsJest} */
-module.exports = {
+
+const base = {
   preset: "ts-jest/presets/js-with-babel",
   testEnvironment: "jsdom",
   transformIgnorePatterns: ["/node_modules/(?!unstable_batchedupdates)"],
+};
+
+const react18 = {
+  ...base,
+  displayName: "React 18",
+};
+
+const react17 = {
+  ...base,
+  displayName: "React 17",
+  moduleNameMapper: {
+    "^react$": "react-17",
+    "^react-dom$": "react-dom-17",
+    "^react-dom/test-utils$": "react-dom-17/test-utils", // `act` is here
+    "^react-test-renderer$": "react-test-renderer-17",
+    "^@testing-library/react$": "@testing-library/react-12",
+  },
+};
+
+module.exports = {
+  projects: [react17, react18],
 };
