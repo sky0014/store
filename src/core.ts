@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef } from "react";
 import { createLogger } from "@sky0014/logger";
-import { clone } from "./util";
+import { clone, getFunctions } from "./util";
 import unstable_batchedUpdates from "unstable_batchedupdates";
 
 const LIB_NAME = "store";
@@ -93,7 +93,7 @@ let reportDepend: ReportDepend;
 let batchedUpdateList: Set<() => any> = new Set();
 let batchedUpdateScheduled = false;
 
-function createStore<T extends Object>(
+function createStore<T extends Record<string, any>>(
   target: T,
   options: CreateStoreOptions = {}
 ): [T & Store, () => T & Store] {
@@ -106,6 +106,7 @@ function createStore<T extends Object>(
   // 赋予唯一name以便全局标识
   storeName = `${storeName}@S${createStoreCount++}`;
 
+  /** @throws {Error} */
   const die = (msg: string) => {
     throw new Error(`[${LIB_NAME}] [${storeName}] ${msg}`);
   };
@@ -144,7 +145,7 @@ function createStore<T extends Object>(
     };
 
     state.inner = new Proxy(state, innerHandle);
-    state.outer = new Proxy(state.inner, outerHandle);
+    state.outer = new Proxy(state, outerHandle);
 
     return state.outer;
   };
@@ -153,7 +154,7 @@ function createStore<T extends Object>(
     logger.log(`clone proxy: ${state.name}`);
 
     state.inner = new Proxy(state, innerHandle);
-    state.outer = new Proxy(state.inner, outerHandle);
+    state.outer = new Proxy(state, outerHandle);
 
     return state.outer;
   };
@@ -165,6 +166,11 @@ function createStore<T extends Object>(
     value?: any
   ) => {
     if (typeof prop === "symbol") {
+      die(
+        `You should not set or delete symbol props(${state.name}.${String(
+          prop
+        )})!`
+      );
       return false;
     }
 
@@ -225,139 +231,140 @@ function createStore<T extends Object>(
     return true;
   };
 
-  const innerHandle: ProxyHandler<State> = {
-    get(state, prop, receiver) {
-      if (prop === STATE) {
-        return state;
-      }
-
-      if (prop === ADMIN) {
-        return admin;
-      }
-
-      if (prop === INNER) {
-        return true;
-      }
-
-      if (prop === "toJSON") {
-        return () => latest(state);
-      }
-
-      const source = latest(state);
-
-      if (typeof prop === "symbol") {
-        // maybe some internal symbol such as: Symbol.toStringTag
-        // just return it
-        return source[prop];
-      }
-
-      const name = `${state.name}.${prop}`;
-      const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
-
-      let value: any;
-
-      if (computed) {
-        if (computed.changed) {
-          // 如改变，则重新收集依赖
-          computed.deps.forEach(
-            (_, name) => delete computedMap[name][computed.name]
-          );
-          computed.deps.clear();
-
-          computedTarget.push(computed);
-          computed.value = computed.getter();
-          computed.changed = false;
-          computedTarget.pop();
-        } else {
-          // 未改变，将当前的依赖作为其他collectTarget的依赖
-          computed.deps.forEach((store, name) => reportSubscribe(name, store));
+  const makeHandler = ({ inner }: { inner: boolean }) => {
+    const handler: ProxyHandler<State> = {
+      get(state, prop, receiver) {
+        if (prop === STATE) {
+          return state;
         }
-        return computed.value;
-      }
 
-      value = source[prop];
-      if (typeof value !== "function") {
-        // computed、action不用subscribe
-        reportSubscribe(name, store);
-      }
+        if (prop === ADMIN) {
+          return admin;
+        }
 
-      if (!value || typeof value !== "object") {
+        if (prop === INNER) {
+          return inner;
+        }
+
+        if (prop === "toJSON") {
+          return () => latest(state);
+        }
+
+        const source = latest(state);
+
+        if (typeof prop === "symbol") {
+          // maybe some internal symbol such as: Symbol.toStringTag
+
+          // toStringTag return storeName: [object storeName]
+          if (prop === Symbol.toStringTag) {
+            return storeName;
+          }
+
+          // other return original
+          return source[prop];
+        }
+
+        const name = `${state.name}.${prop}`;
+        const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
+
+        let value: any;
+
+        if (computed) {
+          if (computed.changed) {
+            // 如改变，则重新收集依赖
+            computed.deps.forEach(
+              (_, name) => delete computedMap[name][computed.name]
+            );
+            computed.deps.clear();
+
+            computedTarget.push(computed);
+            computed.value = computed.getter();
+            computed.changed = false;
+            computedTarget.pop();
+          } else {
+            // 未改变，将当前的依赖作为其他collectTarget的依赖
+            computed.deps.forEach((store, name) =>
+              reportSubscribe(name, store)
+            );
+          }
+          return computed.value;
+        }
+
+        value = source[prop];
+        if (typeof value !== "function") {
+          // computed、action不用subscribe
+          reportSubscribe(name, store);
+        }
+
+        if (!value || typeof value !== "object") {
+          return value;
+        }
+
+        const isInner = receiver[INNER];
+        const valueState: State = value[STATE];
+
+        if (!valueState) {
+          value = source[prop] = createProxy(value, name, state);
+        } else if (valueState.expired) {
+          delete valueState.expired;
+          value = source[prop] = cloneProxy(valueState);
+        }
+
+        if (isInner) {
+          value = value[STATE].inner;
+        }
+
         return value;
-      }
+      },
 
-      const isInner = receiver[INNER];
-      const valueState: State = value[STATE];
+      set(state, prop, value) {
+        return setData(false, state, prop, value);
+      },
 
-      if (!valueState) {
-        value = source[prop] = createProxy(value, name, state);
-      } else if (valueState.expired) {
-        delete valueState.expired;
-        value = source[prop] = cloneProxy(valueState);
-      }
+      getPrototypeOf(state) {
+        return Object.getPrototypeOf(state.base);
+      },
 
-      if (isInner) {
-        value = value[STATE].inner;
-      }
+      setPrototypeOf() {
+        die(`You should not do "setPrototypeOf" of a store!`);
+        return false;
+      },
 
-      return value;
-    },
+      has(state, prop) {
+        return prop in latest(state);
+      },
 
-    set(state, prop, value) {
-      return setData(false, state, prop, value);
-    },
+      deleteProperty(state, prop) {
+        return setData(true, state, prop);
+      },
 
-    getPrototypeOf(state) {
-      return Object.getPrototypeOf(state.base);
-    },
+      ownKeys(state) {
+        return Object.getOwnPropertyNames(latest(state));
+      },
 
-    setPrototypeOf() {
-      die(`You should not do "setPrototypeOf" of a store!`);
-      return false;
-    },
+      defineProperty() {
+        die(`You should not do "defineProperty" of a store!`);
+        return false;
+      },
 
-    has(state, prop) {
-      return prop in latest(state);
-    },
+      getOwnPropertyDescriptor(state, prop) {
+        const desc = Object.getOwnPropertyDescriptor(latest(state), prop);
+        if (!desc) return desc;
+        // May cause error: TypeError: 'getOwnPropertyDescriptor' on proxy: trap reported non-configurability for property 'length' which is either non-existent or configurable in the proxy target
+        // Workaround: set configurable=true
+        return { ...desc, configurable: true };
+      },
+    };
 
-    deleteProperty(state, prop) {
-      return setData(true, state, prop);
-    },
-
-    ownKeys(state) {
-      return Object.getOwnPropertyNames(latest(state));
-    },
-
-    isExtensible() {
-      return false;
-    },
-
-    defineProperty() {
-      die(`You should not do "defineProperty" of a store!`);
-      return false;
-    },
-
-    getOwnPropertyDescriptor(state, prop) {
-      const desc = Object.getOwnPropertyDescriptor(latest(state), prop);
-      if (!desc) return desc;
-      // May cause error: TypeError: 'getOwnPropertyDescriptor' on proxy: trap reported non-configurability for property 'length' which is either non-existent or configurable in the proxy target
-      // Workaround: set configurable=true
-      return { ...desc, configurable: true };
-    },
+    return handler;
   };
 
+  const innerHandle: ProxyHandler<State> = makeHandler({ inner: true });
   const outerHandle: ProxyHandler<State> = {
-    get(state, prop) {
-      if (prop === INNER) {
-        return false;
-      }
-      // @ts-ignore
-      return state[prop];
-    },
-
-    set(state, prop, value) {
+    ...makeHandler({ inner: false }),
+    set(state, prop) {
       die(
-        // @ts-ignore
-        `Do not allowed modify data(${state[STATE].name}.${String(
+        `Do not allowed modify data(${state.name}.${String(
           prop
         )}) directly, you should do it in store actions!`
       );
@@ -366,8 +373,7 @@ function createStore<T extends Object>(
 
     deleteProperty(state, prop) {
       die(
-        // @ts-ignore
-        `Do not allowed modify data(${state[STATE].name}.${String(
+        `Do not allowed modify data(${state.name}.${String(
           prop
         )}) directly, you should do it in store actions!`
       );
@@ -385,7 +391,7 @@ function createStore<T extends Object>(
   // innerStore仅内部使用（主要用于actions），允许直接改变store prop
   const innerStore = new Proxy(state, innerHandle);
   // 暴露给外部的store不允许直接改变store prop
-  const outerStore = new Proxy(innerStore, outerHandle);
+  const outerStore = new Proxy(state, outerHandle);
 
   const produce: Produce = (produceFunc: () => any) =>
     internalProduce(innerStore as any, produceFunc);
@@ -397,18 +403,14 @@ function createStore<T extends Object>(
     die("Symbol in store not supported!");
   }
 
-  const proto = Object.getPrototypeOf(target);
-  const descObj = Object.getOwnPropertyDescriptors(proto);
-  Object.keys(descObj).forEach((key) => {
-    if (key === "constructor") {
-      return;
-    }
-
-    const desc = descObj[key];
+  // get all computed & actions
+  const map = getFunctions(target);
+  Object.keys(map).some((key) => {
+    const desc = map[key];
 
     if (desc.set) {
       die(`Do not allow setter(${key}) in Store!`);
-      return;
+      return true;
     }
 
     if (desc.get) {
@@ -542,10 +544,6 @@ function useStore<T extends Store>(store: T) {
 
   if (!storeRef.current) {
     const checkUpdate: SubscribeListener = (names) => {
-      if (!storeRef.current) {
-        return;
-      }
-
       for (let name of names) {
         if (storeRef.current.map.has(name)) {
           batchedUpdateList.add(forceUpdate);
@@ -556,10 +554,6 @@ function useStore<T extends Store>(store: T) {
 
     const proxy = hookStore(store, {
       onDepend: (name, store2) => {
-        if (!storeRef.current) {
-          return;
-        }
-
         storeRef.current.map.set(name, true);
         if (store2 !== store && !storeRef.current.dependStores.has(store2)) {
           const unsubscribe = subscribeStore(store2, checkUpdate);
@@ -567,6 +561,7 @@ function useStore<T extends Store>(store: T) {
         }
       },
     });
+
     const unsubscribe = subscribeStore(store, checkUpdate);
 
     storeRef.current = {

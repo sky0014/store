@@ -14,3 +14,27 @@ export function clone<T>(obj: T) {
 export function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// get all functions include prototype chain
+export function getFunctions(target: Record<string, any>) {
+  let that = target;
+  let map: Record<string, PropertyDescriptor> = {};
+  while (that && that !== Object.prototype) {
+    Object.getOwnPropertyNames(that).forEach((name) => {
+      if (name === "constructor") {
+        return;
+      }
+
+      const config = Object.getOwnPropertyDescriptor(that, name);
+
+      if (config) {
+        // 先找到的为准，后找到的忽略
+        if (!map[name]) {
+          map[name] = config;
+        }
+      }
+    });
+    that = Object.getPrototypeOf(that);
+  }
+  return map;
+}

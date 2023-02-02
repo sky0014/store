@@ -7,6 +7,7 @@ Another single store library: [easystore](https://github.com/sky0014/easystore)
 # Feature
 
 - Simple, less code, almost no dependencies
+- Support React Native
 - Support multiple stores
 - Support immutable
 - Support nested data
@@ -15,6 +16,7 @@ Another single store library: [easystore](https://github.com/sky0014/easystore)
 - React render optimized
 - Easy to write, no boilerplate
 - Good type IntelliSense
+- Full unit test
 
 ## Install
 

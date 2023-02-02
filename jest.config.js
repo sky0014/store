@@ -1,9 +1,9 @@
 /** @type {import('ts-jest/dist/types').InitialOptionsTsJest} */
 
 const base = {
-  preset: "ts-jest/presets/js-with-babel",
   testEnvironment: "jsdom",
   transformIgnorePatterns: ["/node_modules/(?!unstable_batchedupdates)"],
+  setupFilesAfterEnv: ["@testing-library/jest-dom/"],
 };
 
 const react18 = {
