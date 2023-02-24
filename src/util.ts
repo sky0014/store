@@ -26,7 +26,7 @@ export function getFunctions(target: Record<string, any>) {
       }
 
       const config = Object.getOwnPropertyDescriptor(that, name);
-
+      /* istanbul ignore next */
       if (config) {
         // 先找到的为准，后找到的忽略
         if (!map[name]) {

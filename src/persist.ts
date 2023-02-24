@@ -1,10 +1,8 @@
-import {
-  subscribeStore,
-  internalProduce,
-  logger as _logger,
-  Store,
-} from "./core";
+import promiseFinally from "promise.prototype.finally";
+import { subscribeStore, innerProduce, logger as _logger, Store } from "./core";
 import { delay } from "./util";
+
+promiseFinally.shim();
 
 type GetProp<T> = {
   [K in keyof T]: T[K] extends Function ? never : K;
@@ -12,7 +10,7 @@ type GetProp<T> = {
 
 type GetValue<T> = T[keyof T];
 
-interface PersistStorage {
+export interface PersistStorage {
   getItem: (key: string) => string | Promise<any>;
   setItem: (key: string, value: string) => void | Promise<void>;
 }
@@ -24,6 +22,7 @@ interface PersistOptions<T> {
   blackList?: Array<GetValue<GetProp<T>>>;
   whiteList?: Array<GetValue<GetProp<T>>>;
   onVerUpdate?: (oldVer: number, data: any) => any;
+  flushInterval?: number;
 }
 
 interface StoreData {
@@ -37,8 +36,9 @@ export async function persist<T extends Store>(
   options: PersistOptions<T>
 ) {
   const logger = _logger.makeLogger("persist", options.key);
+  const flushInterval = options.flushInterval ?? 200;
 
-  let filterProps: (prop: string) => boolean;
+  let filterProps: (prop: string) => boolean = () => true;
 
   if (options.whiteList?.length) {
     // 白名单（优先）
@@ -56,16 +56,14 @@ export async function persist<T extends Store>(
       (prop) => typeof (store as any)[prop] !== "function"
     );
     // 要存储的属性
-    const storeProps = new Set(
-      filterProps ? allProps.filter(filterProps) : allProps
-    );
+    const storeProps = new Set(allProps.filter(filterProps));
     return { allProps, storeProps };
   };
 
   // 读取本地存储
-  const stored = await options.storage.getItem(options.key);
-  if (stored) {
-    try {
+  try {
+    const stored = await options.storage.getItem(options.key);
+    if (stored) {
       logger.log("read from storage: ", stored);
 
       let json = JSON.parse(stored) as StoreData;
@@ -75,20 +73,40 @@ export async function persist<T extends Store>(
       if (json.ver !== options.ver && options.onVerUpdate) {
         json.data = options.onVerUpdate(json.ver, json.data);
       }
-      internalProduce(store, () => {
+      innerProduce(store, (inner) => {
         Object.keys(json.data).forEach((prop) => {
           if (filterProps(prop)) {
             // @ts-ignore
-            store[prop] = json.data[prop];
+            inner[prop] = json.data[prop];
           }
         });
       });
-    } catch (e) {
-      logger.warn(`read storage data error: `, e);
     }
+  } catch (e) {
+    logger.warn(`read storage data error: `, e);
   }
 
+  let hasChanged = false;
+  let isStoring = false;
+  let cur: Promise<void>;
+  let next: Promise<void>;
+
   const flush = async () => {
+    if (!hasChanged) {
+      if (isStoring) {
+        return cur;
+      }
+      return;
+    }
+
+    if (isStoring) {
+      next ||= cur.finally(flush);
+      return next;
+    }
+
+    hasChanged = false;
+    isStoring = true;
+
     const data: Record<string, any> = {};
     const { storeProps } = getProps();
     storeProps.forEach((prop) => (data[prop] = (store as any)[prop]));
@@ -99,26 +117,38 @@ export async function persist<T extends Store>(
     };
     const dataStr = JSON.stringify(storeData);
     logger.log("set storage: ", dataStr);
-    await options.storage.setItem(options.key, dataStr);
+
+    cur = Promise.resolve()
+      .then(() => options.storage.setItem(options.key, dataStr))
+      .finally(() => {
+        isStoring = false;
+        cur = null;
+        next = null;
+      });
+
+    return cur;
   };
 
-  let hasChanged = false;
-  let isStoreing = false;
+  let flushing = false;
   const checkStore = async () => {
-    if (!hasChanged || isStoreing) {
+    if (flushing) {
       return;
     }
 
-    hasChanged = false;
-    isStoreing = true;
+    flushing = true;
     await flush();
-    await delay(200); // delay防止频繁set storage
-    isStoreing = false;
-    checkStore();
+    if (flushInterval > 0) {
+      await delay(flushInterval);
+    }
+    flushing = false;
+
+    if (hasChanged) {
+      checkStore();
+    }
   };
 
   // 监听store变化
-  subscribeStore(store, (names) => {
+  const cancel = subscribeStore(store, (names) => {
     const { allProps, storeProps } = getProps();
 
     if (
@@ -130,7 +160,7 @@ export async function persist<T extends Store>(
     }
   });
 
-  return { flush };
+  return { flush, cancel };
 }
 
 function shouldStore(names: Set<string>, props: Set<string>) {

@@ -280,7 +280,7 @@ describe("web store", () => {
       expect(funcB).toHaveBeenCalledTimes(9);
     });
 
-    it("change array", async () => {
+    it("change nested array", async () => {
       expect(screen.getByTestId("array")).toHaveTextContent("1,2,3");
       await act(async () => {
         count.pushArr(4);
@@ -289,6 +289,69 @@ describe("web store", () => {
       expect(screen.getByTestId("array")).toHaveTextContent("1,2,3,4");
       expect(funcA).toHaveBeenCalledTimes(16);
       expect(funcB).toHaveBeenCalledTimes(10);
+    });
+  });
+
+  describe("array prop", () => {
+    class Count {
+      arr = [1, 2, 3];
+
+      push(val: number) {
+        this.arr.push(val);
+      }
+
+      set1(val: number) {
+        this.arr[1] = val;
+      }
+
+      set2(arr: number[]) {
+        this.arr = arr;
+      }
+    }
+
+    const [count, useCount] = createStore(new Count());
+
+    const renderFn = jest.fn();
+
+    function Component() {
+      const count = useCount();
+      renderFn();
+      return <div data-testid="array[1]">{count.arr[1]}</div>;
+    }
+
+    it("change array element", async () => {
+      render(<Component />);
+
+      expect(renderFn).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("array[1]")).toHaveTextContent("2");
+
+      await act(async () => {
+        count.push(4);
+        await delay(delayMs);
+      });
+      expect(renderFn).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("array[1]")).toHaveTextContent("2");
+
+      await act(async () => {
+        count.set1(100);
+        await delay(delayMs);
+      });
+      expect(renderFn).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId("array[1]")).toHaveTextContent("100");
+
+      await act(async () => {
+        count.set2([1, 100, 3, 4]);
+        await delay(delayMs);
+      });
+      expect(renderFn).toHaveBeenCalledTimes(3);
+      expect(screen.getByTestId("array[1]")).toHaveTextContent("100");
+
+      await act(async () => {
+        count.set2([1, 2, 3, 4]);
+        await delay(delayMs);
+      });
+      expect(renderFn).toHaveBeenCalledTimes(4);
+      expect(screen.getByTestId("array[1]")).toHaveTextContent("2");
     });
   });
 

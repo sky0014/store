@@ -56,10 +56,7 @@ interface StoreAdmin {
   pendingChange: Set<State>;
   pendingChangeDirect: Set<string>;
   subscribeListeners: Set<SubscribeListener>;
-}
-
-interface Produce {
-  (produce: () => any): any;
+  innerStore: Store;
 }
 
 const STATE = Symbol("state");
@@ -116,6 +113,7 @@ function createStore<T extends Record<string, any>>(
     pendingChange: new Set(),
     pendingChangeDirect: new Set(),
     subscribeListeners: new Set(),
+    innerStore: null,
   };
 
   const reportSubscribe = (name: string, store: Store) => {
@@ -171,6 +169,7 @@ function createStore<T extends Record<string, any>>(
           prop
         )})!`
       );
+      /* istanbul ignore next */
       return false;
     }
 
@@ -180,7 +179,6 @@ function createStore<T extends Record<string, any>>(
     const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
     if (computed) {
       die(`You should not set or delete computed props(${name})!`);
-      return false;
     }
 
     // handle computed subscribe
@@ -327,6 +325,7 @@ function createStore<T extends Record<string, any>>(
 
       setPrototypeOf() {
         die(`You should not do "setPrototypeOf" of a store!`);
+        /* istanbul ignore next */
         return false;
       },
 
@@ -344,6 +343,7 @@ function createStore<T extends Record<string, any>>(
 
       defineProperty() {
         die(`You should not do "defineProperty" of a store!`);
+        /* istanbul ignore next */
         return false;
       },
 
@@ -368,6 +368,7 @@ function createStore<T extends Record<string, any>>(
           prop
         )}) directly, you should do it in store actions!`
       );
+      /* istanbul ignore next */
       return false;
     },
 
@@ -377,6 +378,7 @@ function createStore<T extends Record<string, any>>(
           prop
         )}) directly, you should do it in store actions!`
       );
+      /* istanbul ignore next */
       return false;
     },
   };
@@ -393,9 +395,6 @@ function createStore<T extends Record<string, any>>(
   // 暴露给外部的store不允许直接改变store prop
   const outerStore = new Proxy(state, outerHandle);
 
-  const produce: Produce = (produceFunc: () => any) =>
-    internalProduce(innerStore as any, produceFunc);
-
   // check symbol
   const symbols = Object.getOwnPropertySymbols(target);
   if (symbols.length) {
@@ -410,7 +409,6 @@ function createStore<T extends Record<string, any>>(
 
     if (desc.set) {
       die(`Do not allow setter(${key}) in Store!`);
-      return true;
     }
 
     if (desc.get) {
@@ -430,11 +428,14 @@ function createStore<T extends Record<string, any>>(
         // @ts-ignore
         target[key] = (...args: any[]) => {
           logger.log(`call action: ${storeName}.${key}`, ...args);
-          return produce(() => func(...args));
+          return innerProduce(store, () => func(...args));
         };
       }
     }
   });
+
+  // save innerStore
+  admin.innerStore = innerStore as any as Store;
 
   const store = outerStore as any as T & Store;
   const useTargetStore = () => useStore(store);
@@ -531,9 +532,9 @@ function hookStore<T extends Store>(store: T, options: HookOptions): T {
   return new Proxy(store, handle);
 }
 
-function internalProduce(store: Store, produce: () => any) {
+function innerProduce<T extends Store>(store: T, produce: (inner: T) => any) {
   const admin = store[ADMIN];
-  const result = produce();
+  const result = produce(<T>admin.innerStore);
   finalize(admin);
   return result;
 }
@@ -594,12 +595,11 @@ function useStore<T extends Store>(store: T) {
 
 export {
   Store,
-  Produce,
   createStore,
   subscribeStore,
   hookStore,
   useStore,
   configStore,
   logger,
-  internalProduce,
+  innerProduce,
 };
