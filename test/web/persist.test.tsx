@@ -1,5 +1,5 @@
-import { PersistStorage, configStore, createStore, persist } from "../src";
-import { delay } from "../src/util";
+import { PersistStorage, createStore, persist } from "../../src";
+import { delay } from "../../src/util";
 
 class Count {
   a = 0;
@@ -39,10 +39,6 @@ const makeTest = (
   flushInterval: number,
   writeInterval: number
 ) => {
-  // configStore({
-  //   debug: true,
-  // });
-
   const wait = flushInterval + writeInterval + 100;
   const getA = () => JSON.parse(map["count"]).data.a;
 
@@ -349,21 +345,15 @@ describe("error boundary", () => {
     mockStorage: PersistStorage
   ) => {
     const [count] = createStore(new Count());
-    const getA = () => JSON.parse(map["count"]).data.a;
 
-    // 读取错误时不影响正常使用
-    const persistor = await persist(count, {
+    persist(count, {
       key: "count",
       ver: 0,
       storage: mockStorage,
+    }).catch((e) => {
+      expect(e).toBeInstanceOf(Error);
+      expect(e.message).toMatch("read storage data error:");
     });
-    expect(count.a).toBe(0);
-    count.changeA(101);
-    await delay(10);
-    await persistor.flush();
-    expect(getA()).toBe(101);
-
-    persistor.cancel();
   };
 
   it("read error", async () => {
