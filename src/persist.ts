@@ -11,7 +11,7 @@ type GetProp<T> = {
 type GetValue<T> = T[keyof T];
 
 export interface PersistStorage {
-  getItem: (key: string) => string | Promise<any>;
+  getItem: (key: string) => string | null | Promise<any>;
   setItem: (key: string, value: string) => void | Promise<void>;
 }
 

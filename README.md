@@ -27,8 +27,8 @@ npm install @sky0014/store
 ## Usage
 
 ```typescript
-// store.ts
-import { createStore, Store, configStore } from "@sky0014/store";
+import { createStore, configStore, persist } from "@sky0014/store";
+import { useEffect } from "react";
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,21 +36,24 @@ function delay(ms: number) {
 
 configStore({
   debug: true,
-  useBatch: true, // if you use react>=18, don't need this
 });
 
-class App extends Store {
+// store
+class AppStore {
   // support nested data
   nest = {
     a: {
       count: 0,
-      doubleCount: 0,
     },
   };
 
-  // support computed
+  // support computed (only re-computed when prop changed)
   get count() {
     return this.nest.a.count;
+  }
+
+  get doubleCount() {
+    return this.count * 2;
   }
 
   // sync action
@@ -63,23 +66,22 @@ class App extends Store {
     // call other action
     this.add();
     await delay(1000);
-    // modify data directly with internal `set` in async action
-    // `set` is the keyword, don't re-define it in store
-    this.set(() => {
-      this.nest.a.count += 100;
-    });
+    this.nest.a.count += 100;
   }
 }
 
-export const [app, useApp] = createStore(new App(), {
+const [app, useApp] = createStore(new AppStore(), {
   storeName: "App", // customize your store name, used for debug info
 });
 
-// App.tsx
-import "./App.css";
-import { useEffect } from "react";
-import { useApp } from "./store/app";
+// persist
+persist(app, {
+  key: "app",
+  ver: 0,
+  storage: localStorage,
+});
 
+// App
 function App() {
   const app = useApp();
 
@@ -90,8 +92,9 @@ function App() {
   return (
     <>
       <div>{app.count}</div>
-      <div>{app.nest.a.doubleCount}</div>
+      <div>{app.doubleCount}</div>
       <button onClick={app.add}> Add </button>
+      <button onClick={app.addAsync}> Add Async </button>
     </>
   );
 }
