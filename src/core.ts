@@ -1,18 +1,16 @@
 import { useEffect, useReducer, useRef } from "react";
 import { createLogger } from "@sky0014/logger";
-import { clone } from "./util";
+import { clone, getFunctions } from "./util";
 import unstable_batchedUpdates from "unstable_batchedupdates";
 
 const LIB_NAME = "store";
 
 interface ConfigStoreOptions {
   debug?: boolean;
-  useBatch?: boolean;
 }
 
 let storeOptions: ConfigStoreOptions = {
   debug: false,
-  useBatch: true,
 };
 
 const logger = createLogger();
@@ -33,7 +31,6 @@ interface CreateStoreOptions {
 interface Computed {
   name: string;
   getter: () => any;
-  setter: (value: any) => any;
   value: any;
   changed: boolean;
   deps: Map<string, Store>;
@@ -46,6 +43,8 @@ interface State {
   copy?: any;
   expired?: boolean;
   isRoot?: boolean;
+  inner?: State;
+  outer?: State;
 }
 
 interface SubscribeListener {
@@ -54,23 +53,19 @@ interface SubscribeListener {
 
 interface StoreAdmin {
   computed: Record<string, Computed>;
-  allowChange: boolean;
   pendingChange: Set<State>;
   pendingChangeDirect: Set<string>;
   subscribeListeners: Set<SubscribeListener>;
-}
-
-interface Produce {
-  (produce: () => any): any;
+  innerStore: Store;
 }
 
 const STATE = Symbol("state");
 const ADMIN = Symbol("admin");
+const INNER = Symbol("inner");
 
 class Store {
   [STATE]: State;
   [ADMIN]: StoreAdmin;
-  set: Produce;
 }
 
 type Unsubscriber = () => boolean;
@@ -95,10 +90,10 @@ let reportDepend: ReportDepend;
 let batchedUpdateList: Set<() => any> = new Set();
 let batchedUpdateScheduled = false;
 
-function createStore<T extends Store>(
+function createStore<T extends Record<string, any>>(
   target: T,
   options: CreateStoreOptions = {}
-): [T, () => T] {
+): [T & Store, () => T & Store] {
   let { storeName } = options;
 
   if (!storeName) {
@@ -108,20 +103,17 @@ function createStore<T extends Store>(
   // 赋予唯一name以便全局标识
   storeName = `${storeName}@S${createStoreCount++}`;
 
+  /** @throws {Error} */
   const die = (msg: string) => {
     throw new Error(`[${LIB_NAME}] [${storeName}] ${msg}`);
   };
 
-  if (target.set !== undefined) {
-    die(`set is a store keyword, DON'T use it!`);
-  }
-
   const admin: StoreAdmin = {
     computed: {},
-    allowChange: false,
     pendingChange: new Set(),
     pendingChangeDirect: new Set(),
     subscribeListeners: new Set(),
+    innerStore: null,
   };
 
   const reportSubscribe = (name: string, store: Store) => {
@@ -142,21 +134,27 @@ function createStore<T extends Store>(
   };
 
   const createProxy = (target: any, name: string, parent: State) => {
+    logger.log(`create proxy: ${name}`);
+
     const state: State = {
       name,
       parent,
       base: target,
     };
 
-    logger.log(`create proxy: ${name}`);
+    state.inner = new Proxy(state, innerHandle);
+    state.outer = new Proxy(state, outerHandle);
 
-    return new Proxy(state, handle);
+    return state.outer;
   };
 
   const cloneProxy = (state: State) => {
     logger.log(`clone proxy: ${state.name}`);
 
-    return new Proxy(state, handle);
+    state.inner = new Proxy(state, innerHandle);
+    state.outer = new Proxy(state, outerHandle);
+
+    return state.outer;
   };
 
   const setData = (
@@ -165,14 +163,13 @@ function createStore<T extends Store>(
     prop: string | symbol,
     value?: any
   ) => {
-    if (!admin.allowChange) {
-      die(
-        "Do not allowed modify data directly, you should do it in set or actions!"
-      );
-      return false;
-    }
-
     if (typeof prop === "symbol") {
+      die(
+        `You should not set or delete symbol props(${state.name}.${String(
+          prop
+        )})!`
+      );
+      /* istanbul ignore next */
       return false;
     }
 
@@ -181,16 +178,7 @@ function createStore<T extends Store>(
 
     const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
     if (computed) {
-      if (isDelete) {
-        // delete computed do nothing
-        return true;
-      }
-      // set computed
-      if (!computed.setter) {
-        die(`missing setter of "${prop}"`);
-      }
-      computed.setter(value);
-      return true;
+      die(`You should not set or delete computed props(${name})!`);
     }
 
     // handle computed subscribe
@@ -209,8 +197,10 @@ function createStore<T extends Store>(
     // handle state
     // compare to base & copy, will be handled when finalize
     const source = state.base;
+    let changed = false;
     if (isDelete ? prop in source : source[prop] !== value) {
       logger.log(`${name} changed`);
+      changed = true;
       admin.pendingChangeDirect.add(name);
       admin.pendingChange.add(state);
 
@@ -224,123 +214,172 @@ function createStore<T extends Store>(
         (isDelete ? prop in state.copy : state.copy[prop] !== value)
       ) {
         logger.log(`${name} restored`);
+        changed = true;
         admin.pendingChangeDirect.delete(name);
         admin.pendingChange.delete(state);
         isDelete ? delete state.copy[prop] : (state.copy[prop] = value);
       }
     }
 
+    // 改变后即触发finalize, finalize内部会做延迟合并处理
+    if (changed) {
+      finalize(admin);
+    }
+
     return true;
   };
 
-  const handle: ProxyHandler<State> = {
-    get(state, prop) {
-      if (prop === STATE) {
-        return state;
-      }
-
-      if (prop === ADMIN) {
-        return admin;
-      }
-
-      if (prop === "toJSON") {
-        return () => latest(state);
-      }
-
-      const source = latest(state);
-
-      if (typeof prop === "symbol") {
-        // maybe some internal symbol such as: Symbol.toStringTag
-        // just return it
-        return source[prop];
-      }
-
-      const name = `${state.name}.${prop}`;
-      const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
-
-      let value: any;
-
-      if (computed) {
-        if (computed.changed) {
-          // 如改变，则重新收集依赖
-          computed.deps.forEach(
-            (_, name) => delete computedMap[name][computed.name]
-          );
-          computed.deps.clear();
-
-          computedTarget.push(computed);
-          computed.value = computed.getter();
-          computed.changed = false;
-          computedTarget.pop();
-        } else {
-          // 未改变，将当前的依赖作为其他collectTarget的依赖
-          computed.deps.forEach((store, name) => reportSubscribe(name, store));
+  const makeHandler = ({ inner }: { inner: boolean }) => {
+    const handler: ProxyHandler<State> = {
+      get(state, prop, receiver) {
+        if (prop === STATE) {
+          return state;
         }
-        return computed.value;
-      }
 
-      value = source[prop];
-      if (typeof value !== "function") {
-        // computed、action不用subscribe
-        reportSubscribe(name, store);
-      }
+        if (prop === ADMIN) {
+          return admin;
+        }
 
-      if (!value || typeof value !== "object") {
+        if (prop === INNER) {
+          return inner;
+        }
+
+        if (prop === "toJSON") {
+          return () => latest(state);
+        }
+
+        const source = latest(state);
+
+        if (typeof prop === "symbol") {
+          // maybe some internal symbol such as: Symbol.toStringTag
+
+          // toStringTag return storeName: [object storeName]
+          if (prop === Symbol.toStringTag) {
+            return storeName;
+          }
+
+          // other return original
+          return source[prop];
+        }
+
+        const name = `${state.name}.${prop}`;
+        const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
+
+        let value: any;
+
+        if (computed) {
+          if (computed.changed) {
+            // 如改变，则重新收集依赖
+            computed.deps.forEach(
+              (_, name) => delete computedMap[name][computed.name]
+            );
+            computed.deps.clear();
+
+            computedTarget.push(computed);
+            computed.value = computed.getter();
+            computed.changed = false;
+            computedTarget.pop();
+          } else {
+            // 未改变，将当前的依赖作为其他collectTarget的依赖
+            computed.deps.forEach((store, name) =>
+              reportSubscribe(name, store)
+            );
+          }
+          return computed.value;
+        }
+
+        value = source[prop];
+        if (typeof value !== "function") {
+          // computed、action不用subscribe
+          reportSubscribe(name, store);
+        }
+
+        if (!value || typeof value !== "object") {
+          return value;
+        }
+
+        const isInner = receiver[INNER];
+        const valueState: State = value[STATE];
+
+        if (!valueState) {
+          value = source[prop] = createProxy(value, name, state);
+        } else if (valueState.expired) {
+          delete valueState.expired;
+          value = source[prop] = cloneProxy(valueState);
+        }
+
+        if (isInner) {
+          value = value[STATE].inner;
+        }
+
         return value;
-      }
+      },
 
-      const valueState: State = value[STATE];
+      set(state, prop, value) {
+        return setData(false, state, prop, value);
+      },
 
-      if (!valueState) {
-        value = source[prop] = createProxy(value, name, state);
-      } else if (valueState.expired) {
-        delete valueState.expired;
-        value = source[prop] = cloneProxy(valueState);
-      }
+      getPrototypeOf(state) {
+        return Object.getPrototypeOf(state.base);
+      },
 
-      return value;
-    },
+      setPrototypeOf() {
+        die(`You should not do "setPrototypeOf" of a store!`);
+        /* istanbul ignore next */
+        return false;
+      },
 
-    set(state, prop, value) {
-      return setData(false, state, prop, value);
-    },
+      has(state, prop) {
+        return prop in latest(state);
+      },
 
-    getPrototypeOf(state) {
-      return Object.getPrototypeOf(state.base);
-    },
+      deleteProperty(state, prop) {
+        return setData(true, state, prop);
+      },
 
-    setPrototypeOf() {
-      die(`You should not do "setPrototypeOf" of a store!`);
+      ownKeys(state) {
+        return Object.getOwnPropertyNames(latest(state));
+      },
+
+      defineProperty() {
+        die(`You should not do "defineProperty" of a store!`);
+        /* istanbul ignore next */
+        return false;
+      },
+
+      getOwnPropertyDescriptor(state, prop) {
+        const desc = Object.getOwnPropertyDescriptor(latest(state), prop);
+        if (!desc) return desc;
+        // May cause error: TypeError: 'getOwnPropertyDescriptor' on proxy: trap reported non-configurability for property 'length' which is either non-existent or configurable in the proxy target
+        // Workaround: set configurable=true
+        return { ...desc, configurable: true };
+      },
+    };
+
+    return handler;
+  };
+
+  const innerHandle: ProxyHandler<State> = makeHandler({ inner: true });
+  const outerHandle: ProxyHandler<State> = {
+    ...makeHandler({ inner: false }),
+    set(state, prop) {
+      die(
+        `Do not allowed modify data(${state.name}.${String(
+          prop
+        )}) directly, you should do it in store actions!`
+      );
+      /* istanbul ignore next */
       return false;
-    },
-
-    has(state, prop) {
-      return prop in latest(state);
     },
 
     deleteProperty(state, prop) {
-      return setData(true, state, prop);
-    },
-
-    ownKeys(state) {
-      return Object.getOwnPropertyNames(latest(state));
-    },
-
-    isExtensible() {
+      die(
+        `Do not allowed modify data(${state.name}.${String(
+          prop
+        )}) directly, you should do it in store actions!`
+      );
+      /* istanbul ignore next */
       return false;
-    },
-
-    defineProperty() {
-      die(`You should not do "defineProperty" of a store!`);
-      return false;
-    },
-
-    getOwnPropertyDescriptor(state, prop) {
-      const desc = Object.getOwnPropertyDescriptor(latest(state), prop);
-      if (!desc) return desc;
-      // May cause error: TypeError: 'getOwnPropertyDescriptor' on proxy: trap reported non-configurability for property 'length' which is either non-existent or configurable in the proxy target
-      // Workaround: set configurable=true
-      return { ...desc, configurable: true };
     },
   };
 
@@ -350,35 +389,34 @@ function createStore<T extends Store>(
     base: target,
     isRoot: true,
   };
-  const proxy = new Proxy(state, handle);
 
-  const produce: Produce = (produceFunc: () => any) =>
-    internalProduce(proxy as any, produceFunc);
-
-  target.set = produce;
+  // innerStore仅内部使用（主要用于actions），允许直接改变store prop
+  const innerStore = new Proxy(state, innerHandle);
+  // 暴露给外部的store不允许直接改变store prop
+  const outerStore = new Proxy(state, outerHandle);
 
   // check symbol
   const symbols = Object.getOwnPropertySymbols(target);
   if (symbols.length) {
     logger.warn("checked symbol in store:", symbols);
-    die("symbol in store not supported!");
+    die("Symbol in store not supported!");
   }
 
-  const proto = Object.getPrototypeOf(target);
-  const descObj = Object.getOwnPropertyDescriptors(proto);
-  Object.keys(descObj).forEach((key) => {
-    if (key === "constructor") {
-      return;
+  // get all computed & actions
+  const map = getFunctions(target);
+  Object.keys(map).some((key) => {
+    const desc = map[key];
+
+    if (desc.set) {
+      die(`Do not allow setter(${key}) in Store!`);
     }
 
-    const desc = descObj[key];
     if (desc.get) {
       // handle computed
       const name = makeComputedKey(key);
       admin.computed[name] = {
         name,
-        getter: desc.get.bind(proxy),
-        setter: desc.set?.bind(proxy),
+        getter: desc.get.bind(outerStore),
         value: undefined,
         changed: true,
         deps: new Map(),
@@ -386,20 +424,20 @@ function createStore<T extends Store>(
     } else {
       // handle actions
       if (typeof desc.value === "function") {
-        const func = desc.value.bind(proxy);
-        proto[key] = (...args: any[]) => {
-          logger.log(`call action: ${storeName}.${key}`, args);
-          if (admin.allowChange) {
-            // already in produce or other actions
-            return func(...args);
-          }
-          return produce(() => func(...args));
+        const func = desc.value.bind(innerStore);
+        // @ts-ignore
+        target[key] = (...args: any[]) => {
+          logger.log(`call action: ${storeName}.${key}`, ...args);
+          return innerProduce(store, () => func(...args));
         };
       }
     }
   });
 
-  const store = proxy as any as T;
+  // save innerStore
+  admin.innerStore = innerStore as any as Store;
+
+  const store = outerStore as any as T & Store;
   const useTargetStore = () => useStore(store);
 
   return [store, useTargetStore];
@@ -433,31 +471,33 @@ function handleChanged(state: State) {
 }
 
 function finalize(admin: StoreAdmin) {
-  admin.pendingChange.forEach(handleChanged);
-  admin.pendingChange.clear();
-
-  if (admin.subscribeListeners.size && admin.pendingChangeDirect.size) {
-    const cloned = new Set(admin.pendingChangeDirect);
-    const clonedListeners = new Set(admin.subscribeListeners);
-    clonedListeners.forEach((func) => func(cloned));
-  }
-  admin.pendingChangeDirect.clear();
-
   // 延迟更新，可以合并多个同步的action，减少不必要渲染
-  if (!batchedUpdateScheduled && batchedUpdateList.size) {
+  if (!batchedUpdateScheduled) {
     batchedUpdateScheduled = true;
+
     Promise.resolve().then(() => {
+      logger.log("finalize...");
+
       batchedUpdateScheduled = false;
+
+      admin.pendingChange.forEach(handleChanged);
+      admin.pendingChange.clear();
+
+      if (admin.subscribeListeners.size && admin.pendingChangeDirect.size) {
+        const cloned = new Set(admin.pendingChangeDirect);
+        const clonedListeners = new Set(admin.subscribeListeners);
+        clonedListeners.forEach((func) => func(cloned));
+      }
+      admin.pendingChangeDirect.clear();
 
       const list = new Set(batchedUpdateList);
       batchedUpdateList.clear();
 
-      if (storeOptions.useBatch) {
+      if (list.size) {
+        // 批量更新，减少不必要渲染
         unstable_batchedUpdates(() => {
           list.forEach((func) => func());
         });
-      } else {
-        list.forEach((func) => func());
       }
     });
   }
@@ -472,10 +512,9 @@ function hookStore<T extends Store>(store: T, options: HookOptions): T {
         return target[prop];
       }
 
-      const temp = reportDepend;
       reportDepend = options.onDepend;
       const value = target[prop];
-      reportDepend = temp;
+      reportDepend = undefined;
 
       if (!value || typeof value !== "object") {
         return value;
@@ -493,11 +532,9 @@ function hookStore<T extends Store>(store: T, options: HookOptions): T {
   return new Proxy(store, handle);
 }
 
-function internalProduce(store: Store, produce: () => any) {
+function innerProduce<T extends Store>(store: T, produce: (inner: T) => any) {
   const admin = store[ADMIN];
-  admin.allowChange = true;
-  const result = produce();
-  admin.allowChange = false;
+  const result = produce(<T>admin.innerStore);
   finalize(admin);
   return result;
 }
@@ -508,10 +545,6 @@ function useStore<T extends Store>(store: T) {
 
   if (!storeRef.current) {
     const checkUpdate: SubscribeListener = (names) => {
-      if (!storeRef.current) {
-        return;
-      }
-
       for (let name of names) {
         if (storeRef.current.map.has(name)) {
           batchedUpdateList.add(forceUpdate);
@@ -522,10 +555,6 @@ function useStore<T extends Store>(store: T) {
 
     const proxy = hookStore(store, {
       onDepend: (name, store2) => {
-        if (!storeRef.current) {
-          return;
-        }
-
         storeRef.current.map.set(name, true);
         if (store2 !== store && !storeRef.current.dependStores.has(store2)) {
           const unsubscribe = subscribeStore(store2, checkUpdate);
@@ -533,6 +562,7 @@ function useStore<T extends Store>(store: T) {
         }
       },
     });
+
     const unsubscribe = subscribeStore(store, checkUpdate);
 
     storeRef.current = {
@@ -564,7 +594,6 @@ function useStore<T extends Store>(store: T) {
 }
 
 export {
-  Produce,
   Store,
   createStore,
   subscribeStore,
@@ -572,5 +601,5 @@ export {
   useStore,
   configStore,
   logger,
-  internalProduce,
+  innerProduce,
 };

@@ -1,5 +1,6 @@
 import typescript from "@rollup/plugin-typescript";
 import dts from "rollup-plugin-dts";
+import externals from "rollup-plugin-node-externals";
 
 export default [
   {
@@ -7,8 +8,7 @@ export default [
     output: {
       dir: "lib",
     },
-    external: ["react", "@sky0014/logger", "unstable_batchedupdates"],
-    plugins: [typescript()],
+    plugins: [typescript(), externals()],
   },
   {
     input: "src/index.ts",

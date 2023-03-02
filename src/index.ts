@@ -1,8 +1,2 @@
-export {
-  createStore,
-  subscribeStore,
-  useStore,
-  Store,
-  configStore,
-} from "./core";
-export { persist } from "./persist";
+export { createStore, subscribeStore, useStore, configStore } from "./core";
+export { persist, PersistStorage } from "./persist";
