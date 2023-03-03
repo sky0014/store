@@ -84,7 +84,7 @@ export async function persist<T extends Store>(
     }
   } catch (e) {
     logger.warn(`read storage data error: `, e);
-    /* istanbul ignore next */
+    /* istanbul ignore else */
     if (process.env.NODE_ENV !== "production") {
       throw new Error(`read storage data error: ${e}`);
     }
