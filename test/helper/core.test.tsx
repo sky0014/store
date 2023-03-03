@@ -151,6 +151,7 @@ export const makeTest = (View: any, isNative = false) => {
         }
 
         reset() {
+          // @ts-ignore
           delete this.nest.a;
         }
 
@@ -391,6 +392,7 @@ export const makeTest = (View: any, isNative = false) => {
         const [count] = createStore(new Count());
 
         expect(() => count.count++).toThrow("Do not allowed modify data");
+        // @ts-ignore
         expect(() => delete count.count).toThrow("Do not allowed modify data");
       });
 
@@ -406,6 +408,7 @@ export const makeTest = (View: any, isNative = false) => {
         const [count] = createStore(new Count());
 
         expect(() => count.nest.a.b++).toThrow("Do not allowed modify data");
+        // @ts-ignore
         expect(() => delete count.nest.a.b).toThrow(
           "Do not allowed modify data"
         );
@@ -421,6 +424,7 @@ export const makeTest = (View: any, isNative = false) => {
           }
 
           get count2() {
+            // @ts-ignore
             delete this._count;
             return 0;
           }

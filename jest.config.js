@@ -1,20 +1,19 @@
 /** @type {import('ts-jest/dist/types').InitialOptionsTsJest} */
 
-const base = {
+const web = {
   testEnvironment: "jsdom",
   transformIgnorePatterns: ["/node_modules/(?!unstable_batchedupdates)"],
   setupFilesAfterEnv: ["@testing-library/jest-dom/"],
   testMatch: ["<rootDir>/test/web/**/*.[jt]s?(x)"],
-  collectCoverageFrom: ["<rootDir>/src/**/*"],
 };
 
 const react18 = {
-  ...base,
+  ...web,
   displayName: "React 18",
 };
 
 const react17 = {
-  ...base,
+  ...web,
   displayName: "React 17",
   moduleNameMapper: {
     "^react$": "react-17",
@@ -26,7 +25,6 @@ const react17 = {
 };
 
 const rn = {
-  ...base,
   testEnvironment: "node", // should be "node"
   displayName: "React Native",
   preset: "react-native",
