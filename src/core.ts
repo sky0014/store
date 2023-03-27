@@ -1,12 +1,75 @@
-import { useEffect, useReducer, useRef } from "react";
+import { FC, memo, useEffect, useReducer, useRef } from "react";
 import { createLogger } from "@sky0014/logger";
-import { clone, getFunctions } from "./util";
+import { arrayPatch, clone, getFunctions, replaceWithKeys } from "./util";
 import unstable_batchedUpdates from "unstable_batchedupdates";
 
 const LIB_NAME = "store";
+const STATE = Symbol("state");
+const ADMIN = Symbol("admin");
+const INNER = Symbol("inner");
+
+type Subscriber = () => void;
+type SubscribeListener = (names: Set<string>) => void;
+type Unsubscriber = () => void;
+type ReportDepend = (prop: Prop, options?: { isDeep?: boolean }) => void;
 
 interface ConfigStoreOptions {
   debug?: boolean;
+}
+
+interface CreateStoreOptions {
+  storeName?: string;
+}
+
+interface Prop {
+  name: string;
+  isKeys: boolean;
+  computers: Set<Computed>;
+  subscribers: Set<Subscriber>;
+  deepSubscribers: Set<Subscriber>;
+  keysProp?: Prop;
+}
+
+interface Computed {
+  name: string;
+  getter: () => any;
+  value: any;
+  changed: boolean;
+  deps: Set<Prop>;
+}
+
+interface State {
+  name: string;
+  parent?: State;
+  base?: any;
+  copy?: any;
+  expired?: boolean;
+  isRoot?: boolean;
+  inner?: State;
+  outer?: State;
+}
+
+interface Store {
+  [STATE]: State;
+  [ADMIN]: StoreAdmin;
+}
+
+interface StoreAdmin {
+  computed: Record<string, Computed>;
+  subscribeListeners: Set<SubscribeListener>;
+  innerStore: Store;
+  storeName: string;
+}
+
+interface StoreRef {
+  onDepend: ReportDepend;
+  unsubscribe: Unsubscriber;
+  unsubscribeList: Unsubscriber[];
+}
+
+interface handleChangedParam {
+  state: State;
+  storeName: string;
 }
 
 let storeOptions: ConfigStoreOptions = {
@@ -24,76 +87,69 @@ function configStore(options: ConfigStoreOptions) {
   logger.setEnable(storeOptions.debug);
 }
 
-interface CreateStoreOptions {
-  storeName?: string;
-}
-
-interface Computed {
-  name: string;
-  getter: () => any;
-  value: any;
-  changed: boolean;
-  deps: Map<string, Store>;
-}
-
-interface State {
-  name: string;
-  parent?: State;
-  base?: any;
-  copy?: any;
-  expired?: boolean;
-  isRoot?: boolean;
-  inner?: State;
-  outer?: State;
-}
-
-interface SubscribeListener {
-  (names: Set<string>): void;
-}
-
-interface StoreAdmin {
-  computed: Record<string, Computed>;
-  pendingChange: Set<State>;
-  pendingChangeDirect: Set<string>;
-  subscribeListeners: Set<SubscribeListener>;
-  innerStore: Store;
-}
-
-const STATE = Symbol("state");
-const ADMIN = Symbol("admin");
-const INNER = Symbol("inner");
-
-class Store {
-  [STATE]: State;
-  [ADMIN]: StoreAdmin;
-}
-
-type Unsubscriber = () => boolean;
-type ReportDepend = (name: string, store: Store) => void;
-
-interface HookOptions {
-  onDepend?: ReportDepend;
-}
-
-interface StoreRef<T> {
-  store: T;
-  dependStores: Map<Store, Unsubscriber>;
-  map: Map<string, boolean>;
-  unsubscribe: Unsubscriber;
-}
-
 // globals
+// store计数
 let createStoreCount = 0;
+// 所有被监听的props，以store分割，以提高效率 { storeName: { propName: Prop } ... }
+// 特例：.keys()
+let storeProps: Record<string, Record<string, Prop>> = {};
 let computedTarget: Computed[] = [];
-let computedMap: Record<string, Record<string, Computed>> = {};
 let reportDepend: ReportDepend;
-let batchedUpdateList: Set<() => any> = new Set();
+let batchedUpdateList: Set<Subscriber> = new Set();
 let batchedUpdateScheduled = false;
+let pendingChanged: Map<
+  Prop,
+  { prop: Prop; state: State; admin: StoreAdmin; propName: string }
+> = new Map();
+
+/* istanbul ignore next */
+function resetStore() {
+  storeProps = {};
+  computedTarget = [];
+  reportDepend = undefined;
+  batchedUpdateList = new Set();
+  batchedUpdateScheduled = false;
+  pendingChanged = new Map();
+}
+
+function getStoreProp(storeName: string, name: string, isKeys = false) {
+  let props = storeProps[storeName];
+  let prop: Prop;
+
+  if (isKeys) {
+    name += ".keys()";
+    prop = props[name];
+
+    if (!prop) {
+      prop = props[name] = {
+        name,
+        isKeys: true,
+        computers: new Set(),
+        subscribers: new Set(),
+        deepSubscribers: new Set(),
+      };
+    }
+  } else {
+    prop = props[name];
+
+    if (!prop) {
+      prop = props[name] = {
+        name,
+        isKeys: false,
+        computers: new Set(),
+        subscribers: new Set(),
+        deepSubscribers: new Set(),
+      };
+    }
+  }
+
+  return prop;
+}
 
 function createStore<T extends Record<string, any>>(
   target: T,
   options: CreateStoreOptions = {}
-): [T & Store, () => T & Store] {
+): T & Store {
   let { storeName } = options;
 
   if (!storeName) {
@@ -102,34 +158,51 @@ function createStore<T extends Record<string, any>>(
 
   // 赋予唯一name以便全局标识
   storeName = `${storeName}@S${createStoreCount++}`;
+  // store监听的props
+  const props: Record<string, Prop> = (storeProps[storeName] = {});
 
-  /** @throws {Error} */
   const die = (msg: string) => {
     throw new Error(`[${LIB_NAME}] [${storeName}] ${msg}`);
   };
 
   const admin: StoreAdmin = {
     computed: {},
-    pendingChange: new Set(),
-    pendingChangeDirect: new Set(),
     subscribeListeners: new Set(),
     innerStore: null,
+    storeName,
   };
 
-  const reportSubscribe = (name: string, store: Store) => {
+  const getProp = (name: string, isKeys = false) =>
+    getStoreProp(storeName, name, isKeys);
+
+  const getKeysProp = (name: string) => {
+    const prop = props[name];
+    if (prop.keysProp) {
+      return prop.keysProp;
+    }
+
+    const keys = replaceWithKeys(name);
+    const keysProp = props[keys];
+    if (keysProp) {
+      prop.keysProp = keysProp;
+    }
+
+    return keysProp;
+  };
+
+  const reportSubscribe = (name: string, isKeys = false) => {
+    const prop = getProp(name, isKeys);
+
     // handle computed
     if (computedTarget.length) {
-      if (!computedMap[name]) {
-        computedMap[name] = {};
-      }
-      computedTarget.forEach((val) => {
-        computedMap[name][val.name] = val;
-        val.deps.set(name, store);
+      computedTarget.forEach((computed) => {
+        prop.computers.add(computed);
+        computed.deps.add(prop);
       });
     }
 
     if (reportDepend) {
-      reportDepend(name, store);
+      reportDepend(prop);
     }
   };
 
@@ -142,8 +215,8 @@ function createStore<T extends Record<string, any>>(
       base: target,
     };
 
-    state.inner = new Proxy(state, innerHandle);
-    state.outer = new Proxy(state, outerHandle);
+    state.inner = makeProxy({ state, inner: true });
+    state.outer = makeProxy({ state, inner: false });
 
     return state.outer;
   };
@@ -151,8 +224,8 @@ function createStore<T extends Record<string, any>>(
   const cloneProxy = (state: State) => {
     logger.log(`clone proxy: ${state.name}`);
 
-    state.inner = new Proxy(state, innerHandle);
-    state.outer = new Proxy(state, outerHandle);
+    state.inner = makeProxy({ state, inner: true });
+    state.outer = makeProxy({ state, inner: false });
 
     return state.outer;
   };
@@ -176,54 +249,44 @@ function createStore<T extends Record<string, any>>(
     const name = `${state.name}.${prop}`;
     logger.log(`${isDelete ? "delete" : "set"} ${name}`);
 
-    const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
+    const computed = state.isRoot && admin.computed[name];
     if (computed) {
       die(`You should not set or delete computed props(${name})!`);
     }
 
-    // handle computed subscribe
-    // compare to latest, so that computed value can be used immediately
-    const latestSource = latest(state);
-    if (isDelete ? prop in latestSource : latestSource[prop] !== value) {
+    const source = latest(state);
+    if (
+      isDelete
+        ? prop in source
+        : source[prop] !== value || (prop === "length" && Array.isArray(source)) // array.length特例：array修改时，length会自动变化，需要监听
+    ) {
       // changed
-      const subscribes = computedMap[name];
-      if (subscribes) {
-        Object.keys(subscribes).forEach(
-          (key) => (subscribes[key].changed = true)
-        );
-      }
-    }
-
-    // handle state
-    // compare to base & copy, will be handled when finalize
-    const source = state.base;
-    let changed = false;
-    if (isDelete ? prop in source : source[prop] !== value) {
       logger.log(`${name} changed`);
-      changed = true;
-      admin.pendingChangeDirect.add(name);
-      admin.pendingChange.add(state);
 
+      const sProp = getProp(name);
+
+      // handle computed
+      // computed should be updated immediately because it's value maybe used immediately
+      // prop self
+      sProp?.computers.forEach((sub) => (sub.changed = true));
+      // prop keys
+      const keysProp = getKeysProp(name);
+      keysProp?.computers.forEach((sub) => (sub.changed = true));
+
+      // handle state
+      pendingChanged.set(sProp, {
+        prop: sProp,
+        state,
+        admin,
+        propName: prop,
+      });
       if (!state.copy) {
         state.copy = clone(state.base);
       }
       isDelete ? delete state.copy[prop] : (state.copy[prop] = value);
-    } else {
-      if (
-        state.copy &&
-        (isDelete ? prop in state.copy : state.copy[prop] !== value)
-      ) {
-        logger.log(`${name} restored`);
-        changed = true;
-        admin.pendingChangeDirect.delete(name);
-        admin.pendingChange.delete(state);
-        isDelete ? delete state.copy[prop] : (state.copy[prop] = value);
-      }
-    }
 
-    // 改变后即触发finalize, finalize内部会做延迟合并处理
-    if (changed) {
-      finalize(admin);
+      // 改变后触发finalize, finalize内部会做延迟合并处理
+      finalize();
     }
 
     return true;
@@ -245,7 +308,8 @@ function createStore<T extends Record<string, any>>(
         }
 
         if (prop === "toJSON") {
-          return () => latest(state);
+          // return () => latest(state);
+          return undefined;
         }
 
         const source = latest(state);
@@ -263,26 +327,27 @@ function createStore<T extends Record<string, any>>(
         }
 
         const name = `${state.name}.${prop}`;
-        const computed = state.isRoot && admin.computed[makeComputedKey(prop)];
+        const computed = state.isRoot && admin.computed[name];
 
         let value: any;
 
         if (computed) {
           if (computed.changed) {
             // 如改变，则重新收集依赖
-            computed.deps.forEach(
-              (_, name) => delete computedMap[name][computed.name]
-            );
+            computed.deps.forEach((prop) => prop.computers.delete(computed));
             computed.deps.clear();
 
             computedTarget.push(computed);
-            computed.value = computed.getter();
-            computed.changed = false;
-            computedTarget.pop();
+            try {
+              computed.value = computed.getter(); // maybe exception
+            } finally {
+              computed.changed = false;
+              computedTarget.pop();
+            }
           } else {
             // 未改变，将当前的依赖作为其他collectTarget的依赖
-            computed.deps.forEach((store, name) =>
-              reportSubscribe(name, store)
+            computed.deps.forEach((prop) =>
+              reportSubscribe(prop.name, prop.isKeys)
             );
           }
           return computed.value;
@@ -291,7 +356,7 @@ function createStore<T extends Record<string, any>>(
         value = source[prop];
         if (typeof value !== "function") {
           // computed、action不用subscribe
-          reportSubscribe(name, store);
+          reportSubscribe(name);
         }
 
         if (!value || typeof value !== "object") {
@@ -338,6 +403,7 @@ function createStore<T extends Record<string, any>>(
       },
 
       ownKeys(state) {
+        reportSubscribe(state.name, true);
         return Object.getOwnPropertyNames(latest(state));
       },
 
@@ -349,6 +415,7 @@ function createStore<T extends Record<string, any>>(
 
       getOwnPropertyDescriptor(state, prop) {
         const desc = Object.getOwnPropertyDescriptor(latest(state), prop);
+        /* istanbul ignore next */
         if (!desc) return desc;
         // May cause error: TypeError: 'getOwnPropertyDescriptor' on proxy: trap reported non-configurability for property 'length' which is either non-existent or configurable in the proxy target
         // Workaround: set configurable=true
@@ -382,6 +449,19 @@ function createStore<T extends Record<string, any>>(
       return false;
     },
   };
+  const innerArrayHandle = arrayPatch(innerHandle);
+  const outerArrayHandle = arrayPatch(outerHandle);
+
+  const makeProxy = ({ state, inner }: { state: State; inner: boolean }) => {
+    let t: any = state;
+    let h = inner ? innerHandle : outerHandle;
+    if (Array.isArray(state.base)) {
+      // array特殊处理，让Json序列化及类型判断等能正常运作
+      t = [state];
+      h = inner ? innerArrayHandle : outerArrayHandle;
+    }
+    return new Proxy(t, h);
+  };
 
   // root state
   const state: State = {
@@ -391,9 +471,9 @@ function createStore<T extends Record<string, any>>(
   };
 
   // innerStore仅内部使用（主要用于actions），允许直接改变store prop
-  const innerStore = new Proxy(state, innerHandle);
+  const innerStore = makeProxy({ state, inner: true });
   // 暴露给外部的store不允许直接改变store prop
-  const outerStore = new Proxy(state, outerHandle);
+  const outerStore = makeProxy({ state, inner: false });
 
   // check symbol
   const symbols = Object.getOwnPropertySymbols(target);
@@ -413,13 +493,13 @@ function createStore<T extends Record<string, any>>(
 
     if (desc.get) {
       // handle computed
-      const name = makeComputedKey(key);
+      const name = `${storeName}.${key}`;
       admin.computed[name] = {
         name,
         getter: desc.get.bind(outerStore),
         value: undefined,
         changed: true,
-        deps: new Map(),
+        deps: new Set(),
       };
     } else {
       // handle actions
@@ -428,7 +508,7 @@ function createStore<T extends Record<string, any>>(
         // @ts-ignore
         target[key] = (...args: any[]) => {
           logger.log(`call action: ${storeName}.${key}`, ...args);
-          return innerProduce(store, () => func(...args));
+          return func(...args);
         };
       }
     }
@@ -438,13 +518,8 @@ function createStore<T extends Record<string, any>>(
   admin.innerStore = innerStore as any as Store;
 
   const store = outerStore as any as T & Store;
-  const useTargetStore = () => useStore(store);
 
-  return [store, useTargetStore];
-}
-
-function makeComputedKey(prop: string) {
-  return "@" + prop;
+  return store;
 }
 
 function latest(state: State) {
@@ -457,7 +532,7 @@ function subscribeStore(store: Store, listener: SubscribeListener) {
   return () => admin.subscribeListeners.delete(listener);
 }
 
-function handleChanged(state: State) {
+function handleChanged({ state, storeName }: handleChangedParam) {
   state.expired = true;
 
   if (state.copy) {
@@ -465,35 +540,71 @@ function handleChanged(state: State) {
     delete state.copy;
   }
 
+  const props = storeProps[storeName];
+  const prop = props[state.name];
+  if (prop?.deepSubscribers?.size) {
+    prop.deepSubscribers.forEach((sub) => batchedUpdateList.add(sub));
+  }
+
   if (state.parent) {
-    handleChanged(state.parent);
+    handleChanged({ state: state.parent, storeName });
   }
 }
 
-function finalize(admin: StoreAdmin) {
+function finalize() {
   // 延迟更新，可以合并多个同步的action，减少不必要渲染
   if (!batchedUpdateScheduled) {
     batchedUpdateScheduled = true;
 
     Promise.resolve().then(() => {
-      logger.log("finalize...");
-
       batchedUpdateScheduled = false;
 
-      admin.pendingChange.forEach(handleChanged);
-      admin.pendingChange.clear();
+      /* istanbul ignore next */
+      if (!pendingChanged.size) return;
 
-      if (admin.subscribeListeners.size && admin.pendingChangeDirect.size) {
-        const cloned = new Set(admin.pendingChangeDirect);
-        const clonedListeners = new Set(admin.subscribeListeners);
-        clonedListeners.forEach((func) => func(cloned));
+      const changedStates = new Map<Prop, handleChangedParam>();
+      const names = new Set<string>();
+      const subscribeListeners = new Set<SubscribeListener>();
+      pendingChanged.forEach(({ prop, state, admin, propName }) => {
+        if (
+          state.base &&
+          state.copy &&
+          typeof state.base === "object" &&
+          state.base[propName] !== state.copy[propName]
+        ) {
+          // changed
+          changedStates.set(prop, { state, storeName: admin.storeName });
+          names.add(admin.storeName);
+          admin.subscribeListeners.forEach((sub) =>
+            subscribeListeners.add(sub)
+          );
+          prop.subscribers.forEach((sub) => batchedUpdateList.add(sub));
+          prop.keysProp?.subscribers.forEach((sub) =>
+            batchedUpdateList.add(sub)
+          );
+        }
+      });
+      pendingChanged.clear();
+
+      if (!changedStates.size) {
+        return;
       }
-      admin.pendingChangeDirect.clear();
 
-      const list = new Set(batchedUpdateList);
-      batchedUpdateList.clear();
+      logger.log("finalize...", ...names);
 
-      if (list.size) {
+      changedStates.forEach(handleChanged);
+
+      if (subscribeListeners.size) {
+        const names = new Set(
+          [...changedStates.keys()].map((prop) => prop.name)
+        );
+        subscribeListeners.forEach((listener) => listener(names));
+      }
+
+      if (batchedUpdateList.size) {
+        const list = new Set(batchedUpdateList);
+        batchedUpdateList.clear();
+
         // 批量更新，减少不必要渲染
         unstable_batchedUpdates(() => {
           list.forEach((func) => func());
@@ -503,102 +614,80 @@ function finalize(admin: StoreAdmin) {
   }
 }
 
-function hookStore<T extends Store>(store: T, options: HookOptions): T {
-  const map = new WeakMap();
-
-  const handle: ProxyHandler<any> = {
-    get(target, prop) {
-      if (typeof prop === "symbol") {
-        return target[prop];
-      }
-
-      reportDepend = options.onDepend;
-      const value = target[prop];
-      reportDepend = undefined;
-
-      if (!value || typeof value !== "object") {
-        return value;
-      }
-
-      // 缓存起来，防止每次都生成新对象，造成react hooks dependencies不一致
-      if (!map.has(value)) {
-        map.set(value, new Proxy(value, handle));
-      }
-
-      return map.get(value);
-    },
-  };
-
-  return new Proxy(store, handle);
-}
-
 function innerProduce<T extends Store>(store: T, produce: (inner: T) => any) {
   const admin = store[ADMIN];
-  const result = produce(<T>admin.innerStore);
-  finalize(admin);
-  return result;
+  return produce(<T>admin.innerStore);
 }
 
-function useStore<T extends Store>(store: T) {
-  const storeRef = useRef<StoreRef<T>>();
-  const [, forceUpdate] = useReducer((x) => x + 1, 0);
+function observe<T>(fc: T): T {
+  if (typeof fc === "function") {
+    return ((...args: any[]) => {
+      const storeRef = useRef<StoreRef>();
+      const [, forceUpdate] = useReducer((x) => x + 1, 0);
 
-  if (!storeRef.current) {
-    const checkUpdate: SubscribeListener = (names) => {
-      for (let name of names) {
-        if (storeRef.current.map.has(name)) {
-          batchedUpdateList.add(forceUpdate);
-          break;
-        }
+      if (!storeRef.current) {
+        const onDepend: ReportDepend = (prop, options) => {
+          const subscribers = options?.isDeep
+            ? prop.deepSubscribers
+            : prop.subscribers;
+          subscribers.add(forceUpdate);
+          storeRef.current.unsubscribeList.push(() =>
+            subscribers.delete(forceUpdate)
+          );
+        };
+
+        const unsubscribe = () =>
+          storeRef.current.unsubscribeList.splice(0).forEach((fn) => fn());
+
+        storeRef.current = {
+          onDepend,
+          unsubscribe,
+          unsubscribeList: [],
+        };
       }
-    };
 
-    const proxy = hookStore(store, {
-      onDepend: (name, store2) => {
-        storeRef.current.map.set(name, true);
-        if (store2 !== store && !storeRef.current.dependStores.has(store2)) {
-          const unsubscribe = subscribeStore(store2, checkUpdate);
-          storeRef.current.dependStores.set(store2, unsubscribe);
-        }
-      },
-    });
+      // 每次render清理，重新收集依赖
+      storeRef.current.unsubscribe();
+      reportDepend = storeRef.current.onDepend;
+      const result = fc(...args);
+      reportDepend = undefined;
 
-    const unsubscribe = subscribeStore(store, checkUpdate);
+      useEffect(() => {
+        return () => {
+          // unmount清理
+          storeRef.current?.unsubscribe();
+          storeRef.current = undefined;
+        };
+      }, []);
 
-    storeRef.current = {
-      store: proxy,
-      dependStores: new Map(),
-      map: new Map(),
-      unsubscribe,
-    };
+      return result;
+    }) as T;
   }
 
-  // 每次render清理，重新收集依赖
-  storeRef.current.map.clear();
-  // 清理依赖store
-  if (storeRef.current.dependStores.size) {
-    storeRef.current.dependStores.forEach((unsubscribe) => unsubscribe());
-    storeRef.current.dependStores.clear();
+  if (typeof fc === "object") {
+    const admin = (fc as unknown as Store)[ADMIN];
+    const state = (fc as unknown as Store)[STATE];
+    if (admin && state) {
+      const prop = getStoreProp(admin.storeName, state.name);
+      reportDepend(prop, { isDeep: true });
+      return fc;
+    }
   }
 
-  useEffect(() => {
-    return () => {
-      // unmount清理
-      storeRef.current?.unsubscribe();
-      storeRef.current?.dependStores.forEach((unsubscribe) => unsubscribe());
-      storeRef.current = undefined;
-    };
-  }, []);
+  return fc;
+}
 
-  return storeRef.current.store;
+function observeAndMemo<T extends object, K extends FC<T>>(fc: K) {
+  return memo<T>(observe(fc));
 }
 
 export {
   Store,
   createStore,
+  resetStore,
   subscribeStore,
-  hookStore,
-  useStore,
+  observe,
+  observeAndMemo,
   configStore,
   logger,
   innerProduce,

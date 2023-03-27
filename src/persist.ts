@@ -120,7 +120,7 @@ export async function persist<T extends Store>(
       data,
     };
     const dataStr = JSON.stringify(storeData);
-    logger.log("set storage: ", dataStr);
+    logger.log("set storage");
 
     cur = Promise.resolve()
       .then(() => options.storage.setItem(options.key, dataStr))

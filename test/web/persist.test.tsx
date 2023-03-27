@@ -50,7 +50,7 @@ const makeTest = (
   });
 
   it("get & set", async () => {
-    const [count] = createStore(new Count());
+    const count = createStore(new Count());
 
     const { flush, cancel } = await persist(count, {
       key: "count",
@@ -147,7 +147,7 @@ const makeTest = (
   }, 20000);
 
   it("read from storage", async () => {
-    const [count] = createStore(new Count()); // new store
+    const count = createStore(new Count()); // new store
     expect(count.a).toBe(0);
 
     // init: read from storage
@@ -164,7 +164,7 @@ const makeTest = (
 
   it("blacklist", async () => {
     // no blacklist
-    const [count1] = createStore(new Count());
+    const count1 = createStore(new Count());
     const persistor1 = await persist(count1, {
       key: "count",
       ver: 0,
@@ -177,7 +177,7 @@ const makeTest = (
     persistor1.cancel();
 
     // use blacklist
-    const [count2] = createStore(new Count());
+    const count2 = createStore(new Count());
     const persistor2 = await persist(count2, {
       key: "count",
       ver: 0,
@@ -216,7 +216,7 @@ const makeTest = (
   });
 
   it("whitelist", async () => {
-    const [count1] = createStore(new Count());
+    const count1 = createStore(new Count());
     const persistor1 = await persist(count1, {
       key: "count",
       ver: 0,
@@ -241,7 +241,7 @@ const makeTest = (
   });
 
   it("blacklist & whitelist (whitelist first)", async () => {
-    const [count1] = createStore(new Count());
+    const count1 = createStore(new Count());
     const persistor1 = await persist(count1, {
       key: "count",
       ver: 0,
@@ -267,7 +267,7 @@ const makeTest = (
   });
 
   it("version update", async () => {
-    const [count] = createStore(new Count());
+    const count = createStore(new Count());
     const onVerUpdate = jest.fn(() => ({ a: 1, b: 2, c: 3 }));
     const persistor = await persist(count, {
       key: "count",
@@ -291,7 +291,7 @@ const makeTest = (
   });
 
   it("no flush interval", async () => {
-    const [count] = createStore(new Count());
+    const count = createStore(new Count());
     const persistor = await persist(count, {
       key: "count",
       ver: 0,
@@ -344,7 +344,7 @@ describe("error boundary", () => {
     map: Record<string, any>,
     mockStorage: PersistStorage
   ) => {
-    const [count] = createStore(new Count());
+    const count = createStore(new Count());
 
     persist(count, {
       key: "count",
