@@ -1,4 +1,14 @@
-import { FC, memo, useEffect, useReducer, useRef } from "react";
+import {
+  ComponentClass,
+  FC,
+  FunctionComponent,
+  NamedExoticComponent,
+  createElement,
+  memo,
+  useEffect,
+  useReducer,
+  useRef,
+} from "react";
 import { createLogger } from "@sky0014/logger";
 import { arrayPatch, clone, getFunctions, replaceWithKeys } from "./util";
 import unstable_batchedUpdates from "unstable_batchedupdates";
@@ -7,6 +17,7 @@ const LIB_NAME = "store";
 const STATE = Symbol("state");
 const ADMIN = Symbol("admin");
 const INNER = Symbol("inner");
+const OBSERVED = Symbol("observed");
 
 type Subscriber = () => void;
 type SubscribeListener = (names: Set<string>) => void;
@@ -190,7 +201,10 @@ function createStore<T extends Record<string, any>>(
     return keysProp;
   };
 
-  const reportSubscribe = (name: string, isKeys = false) => {
+  const reportSubscribe = (
+    name: string,
+    { isKeys = false, isDeep = false } = {}
+  ) => {
     const prop = getProp(name, isKeys);
 
     // handle computed
@@ -202,7 +216,7 @@ function createStore<T extends Record<string, any>>(
     }
 
     if (reportDepend) {
-      reportDepend(prop);
+      reportDepend(prop, { isDeep });
     }
   };
 
@@ -347,7 +361,7 @@ function createStore<T extends Record<string, any>>(
           } else {
             // 未改变，将当前的依赖作为其他collectTarget的依赖
             computed.deps.forEach((prop) =>
-              reportSubscribe(prop.name, prop.isKeys)
+              reportSubscribe(prop.name, { isKeys: prop.isKeys })
             );
           }
           return computed.value;
@@ -403,7 +417,7 @@ function createStore<T extends Record<string, any>>(
       },
 
       ownKeys(state) {
-        reportSubscribe(state.name, true);
+        reportSubscribe(state.name, { isKeys: true });
         return Object.getOwnPropertyNames(latest(state));
       },
 
@@ -619,9 +633,24 @@ function innerProduce<T extends Store>(store: T, produce: (inner: T) => any) {
   return produce(<T>admin.innerStore);
 }
 
-function observe<T>(fc: T): T {
+function observe<T>(fc: T) {
   if (typeof fc === "function") {
-    return ((...args: any[]) => {
+    // @ts-ignore
+    if (fc[OBSERVED]) {
+      return fc;
+    }
+
+    // class component
+    if (typeof fc.prototype?.render === "function") {
+      const observed = observe((props: any) => {
+        Object.keys(props).forEach((key) => observe(props[key]));
+        return createElement(fc as any, props);
+      }) as FunctionComponent;
+      return observed;
+    }
+
+    // observe fc
+    const observed = ((...args: any[]) => {
       const storeRef = useRef<StoreRef>();
       const [, forceUpdate] = useReducer((x) => x + 1, 0);
 
@@ -662,23 +691,48 @@ function observe<T>(fc: T): T {
 
       return result;
     }) as T;
+    // @ts-ignore
+    observed[OBSERVED] = true;
+    return observed;
   }
 
   if (typeof fc === "object") {
-    const admin = (fc as unknown as Store)[ADMIN];
-    const state = (fc as unknown as Store)[STATE];
-    if (admin && state) {
-      const prop = getStoreProp(admin.storeName, state.name);
-      reportDepend(prop, { isDeep: true });
+    // observe memoed fc
+    // @ts-ignore
+    if (fc.$$typeof && typeof fc.type === "function") {
+      // @ts-ignore
+      fc.type = observe(fc.type);
       return fc;
+    }
+
+    // observe store prop
+    if (reportDepend) {
+      const admin = (fc as unknown as Store)[ADMIN];
+      const state = (fc as unknown as Store)[STATE];
+      /* istanbul ignore else */
+      if (admin && state) {
+        const prop = getStoreProp(admin.storeName, state.name);
+        reportDepend(prop, { isDeep: true });
+        return fc;
+      }
     }
   }
 
+  // others just return
   return fc;
 }
 
 function observeAndMemo<T extends object, K extends FC<T>>(fc: K) {
   return memo<T>(observe(fc));
+}
+
+function connect<T, K extends T>(
+  mapProps: () => T,
+  ClassComponent: ComponentClass<K> | NamedExoticComponent<K>
+) {
+  return observe((props: K) =>
+    createElement(ClassComponent, { ...mapProps(), ...props })
+  ) as FunctionComponent<Omit<K, keyof T>>;
 }
 
 export {
@@ -691,4 +745,5 @@ export {
   configStore,
   logger,
   innerProduce,
+  connect,
 };

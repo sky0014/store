@@ -4,7 +4,13 @@ import logSpy from "./logmock.test"; // 必须在src之前导入
 import React, { PropsWithChildren, memo, useEffect, useState } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
-import { configStore, createStore, observe, observeAndMemo } from "../../src";
+import {
+  configStore,
+  connect,
+  createStore,
+  observe,
+  observeAndMemo,
+} from "../../src";
 import { delay } from "../../src/util";
 
 const delayMs = 100;
@@ -1378,6 +1384,84 @@ export const makeTest = (View: any, isNative = false) => {
         });
         expect(fn).toHaveBeenCalledTimes(2); // useEffect depend trigger re-render
       });
+
+      it("Object.keys trigger re-render", async () => {
+        let index = 0;
+        class Count {
+          nest = {};
+
+          change1() {
+            this.nest[`prop${index++}`] = { deep: 1 };
+          }
+
+          change2() {
+            this.nest["prop0"].deep = 2;
+          }
+        }
+
+        const count = createStore(new Count());
+
+        const fn = jest.fn();
+        const Component = observe(() => {
+          fn();
+          return <View testID="test">{Object.keys(count.nest).join(",")}</View>;
+        });
+
+        render(<Component />);
+
+        expect(screen.getByTestId("test")).toHaveTextContent("");
+        await act(async () => {
+          count.change1();
+          await delay(delayMs);
+        });
+        expect(screen.getByTestId("test")).toHaveTextContent("prop0");
+        await act(async () => {
+          count.change1();
+          await delay(delayMs);
+        });
+        expect(screen.getByTestId("test")).toHaveTextContent("prop0,prop1");
+        fn.mockReset();
+        await act(async () => {
+          count.change2();
+          await delay(delayMs);
+        });
+        expect(screen.getByTestId("test")).toHaveTextContent("prop0,prop1");
+        expect(fn).not.toBeCalled(); // change deep not trigger keys re-render
+      });
+
+      it("dynamic sub props trigger re-render", async () => {
+        class Count {
+          nest = {};
+
+          change1() {
+            Object.assign(this.nest, { a: { content: "hello" } });
+          }
+
+          change2() {
+            Object.assign(this.nest, { a: { content: "world" } });
+          }
+        }
+
+        const count = createStore(new Count());
+
+        const Component = observe(() => {
+          return <View testID="test">{count.nest["a"]?.content}</View>;
+        });
+
+        render(<Component />);
+
+        expect(screen.getByTestId("test")).toHaveTextContent("");
+        await act(async () => {
+          count.change1();
+          await delay(delayMs);
+        });
+        expect(screen.getByTestId("test")).toHaveTextContent("hello");
+        await act(async () => {
+          count.change2();
+          await delay(delayMs);
+        });
+        expect(screen.getByTestId("test")).toHaveTextContent("world");
+      });
     });
 
     describe("types", () => {
@@ -1635,7 +1719,96 @@ export const makeTest = (View: any, isNative = false) => {
         expect(fn1).toBeCalledTimes(5);
       });
 
-      it.skip("observe class component", async () => {
+      it("observe memoed fc", async () => {
+        class Count {
+          arr = [
+            {
+              content: "test1",
+              done: false,
+            },
+            {
+              content: "test2",
+              done: false,
+            },
+            {
+              content: "test3",
+              done: false,
+            },
+          ];
+
+          change1() {
+            this.arr.push({
+              content: "test4",
+              done: false,
+            });
+          }
+
+          change2() {
+            this.arr[1].done = true;
+          }
+        }
+
+        const count = createStore(new Count());
+
+        const fn1 = jest.fn();
+        const fn2 = jest.fn();
+
+        const Item = observe(
+          memo(({ data }: { data: any }) => {
+            fn1();
+
+            return (
+              <View>
+                {data.content} {data.done}
+              </View>
+            );
+          })
+        );
+
+        const Component = observe(() => {
+          fn2();
+          return (
+            <View>
+              {count.arr.map((item, index) => (
+                <Item key={index} data={item} />
+              ))}
+            </View>
+          );
+        });
+
+        render(<Component />);
+
+        expect(fn2).toBeCalledTimes(1);
+        expect(fn1).toBeCalledTimes(3);
+        await act(async () => {
+          count.change1();
+          await delay(delayMs);
+        });
+        expect(fn2).toBeCalledTimes(2);
+        expect(fn1).toBeCalledTimes(4);
+        await act(async () => {
+          count.change2();
+          await delay(delayMs);
+        });
+        expect(fn2).toBeCalledTimes(2);
+        expect(fn1).toBeCalledTimes(5);
+      });
+
+      it("observe multiple times", () => {
+        const fc = jest.fn();
+        const observed = observe(fc);
+        expect(observe(observed)).toBe(observed);
+
+        class Test extends React.Component {
+          render() {
+            return null;
+          }
+        }
+        const observed2 = observe(Test);
+        expect(observe(observed2)).toBe(observed2);
+      });
+
+      it("observe class component: pass props", async () => {
         class Count {
           count = 0;
 
@@ -1646,17 +1819,59 @@ export const makeTest = (View: any, isNative = false) => {
 
         const count = createStore(new Count());
 
-        class Component extends React.Component<PropsWithChildren<{}>> {
+        class Component extends React.Component<
+          PropsWithChildren<{ count: Count }>
+        > {
           render() {
             return (
               <View testID="count">
-                {this.props.children} {count.count}
+                {this.props.children} {this.props.count.count}
               </View>
             );
           }
         }
 
         const Observed = observe(Component);
+
+        render(<Observed count={count}>xxx</Observed>);
+
+        expect(screen.getByTestId("count")).toHaveTextContent("xxx 0");
+        await act(async () => {
+          count.add();
+          await delay(delayMs);
+        });
+        expect(screen.getByTestId("count")).toHaveTextContent("xxx 1");
+      });
+
+      it("observe class component: use connect", async () => {
+        class Count {
+          count = 0;
+
+          add() {
+            this.count++;
+          }
+        }
+
+        const count = createStore(new Count());
+
+        class Component extends React.Component<
+          PropsWithChildren<{ count: number }>
+        > {
+          render() {
+            return (
+              <View testID="count">
+                {this.props.children} {this.props.count}
+              </View>
+            );
+          }
+        }
+
+        const Observed = connect(
+          () => ({
+            count: count.count,
+          }),
+          Component
+        );
 
         render(<Observed>xxx</Observed>);
 
