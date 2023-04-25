@@ -28,7 +28,7 @@ npm install @sky0014/store
 
 ### Simple way **(Strongly recommend)**
 
-Used with babel plugin: [babel-plugin-sky0014-store-helper]()
+Used with babel plugin: [babel-plugin-sky0014-store-helper](https://www.npmjs.com/package/babel-plugin-sky0014-store-helper)
 
 It will do all dirty work for you, and you no need to care about what to observe, just code as you wish :)
 
