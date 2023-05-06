@@ -309,6 +309,33 @@ const makeTest = (
 
     persistor.cancel();
   });
+
+  it("computed props should not be persist", async () => {
+    class Count {
+      count = 0;
+
+      get doubleCount() {
+        return 2 * this.count;
+      }
+    }
+
+    // clear
+    delete map["count"];
+
+    const count = createStore(new Count());
+    await persist(count, {
+      key: "count",
+      ver: 0,
+      storage: mockStorage,
+    });
+    expect(JSON.parse(map["count"])).toEqual({
+      __store__: true,
+      ver: 0,
+      data: {
+        count: 0,
+      },
+    });
+  });
 };
 
 describe("sync storage", () => {

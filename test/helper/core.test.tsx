@@ -775,6 +775,7 @@ export const makeTest = (View: any, isNative = false) => {
       });
 
       it("computed use Object.keys", async () => {
+        const fn = jest.fn();
         class Count {
           nest = {
             a: 1,
@@ -782,20 +783,76 @@ export const makeTest = (View: any, isNative = false) => {
           };
 
           get data() {
+            fn();
             return Object.keys(this.nest);
-            // return JSON.stringify(this.nest);
           }
 
           change() {
             this.nest["c"] = 3;
+          }
+
+          change2() {
+            this.nest.b = 3;
           }
         }
 
         const count = createStore(new Count());
 
         expect(count.data).toEqual(["a", "b"]);
+        expect(fn).toHaveBeenCalledTimes(1);
+
+        count.change2();
+        await delay(delayMs);
+        expect(count.data).toEqual(["a", "b"]);
+        expect(fn).toHaveBeenCalledTimes(1);
+
         count.change();
+        // change immediatly
         expect(count.data).toEqual(["a", "b", "c"]);
+        await delay(delayMs);
+        expect(count.data).toEqual(["a", "b", "c"]);
+        expect(fn).toHaveBeenCalledTimes(2);
+      });
+
+      it("computed use Object.keys 2", async () => {
+        const fn = jest.fn();
+        class Count {
+          nest = {
+            a: 1,
+            b: 2,
+          };
+
+          get data() {
+            fn();
+            return this.nest;
+          }
+
+          change() {
+            this.nest["c"] = 3;
+          }
+
+          change2() {
+            this.nest.b = 3;
+          }
+        }
+
+        const count = createStore(new Count());
+
+        expect(Object.keys(count.data)).toEqual(["a", "b"]);
+        expect(fn).toHaveBeenCalledTimes(1);
+
+        count.change2();
+        await delay(delayMs);
+        expect(Object.keys(count.data)).toEqual(["a", "b"]);
+        expect(fn).toHaveBeenCalledTimes(2);
+
+        count.change();
+        // change immediatly
+        expect(Object.keys(count.data)).toEqual(["a", "b", "c"]);
+        await delay(delayMs);
+        expect(Object.keys(count.data)).toEqual(["a", "b", "c"]);
+        expect(count.data === count.nest).toBe(true);
+        expect(fn).toHaveBeenCalledTimes(3);
       });
 
       it("computed use json", async () => {
@@ -887,6 +944,82 @@ export const makeTest = (View: any, isNative = false) => {
         count.change3();
         expect(count.total).toBe(20);
         expect(fn).toHaveBeenCalledTimes(3); // should be called because computed value maybe used in change3 immediately
+      });
+
+      it("computed trigger re-render", async () => {
+        const fn = jest.fn();
+
+        class Count {
+          doneTime: number;
+
+          get isDone() {
+            return !!this.doneTime;
+          }
+
+          done() {
+            this.doneTime = Date.now();
+          }
+        }
+
+        const count = createStore(new Count());
+
+        const Component = observe(() => {
+          fn();
+          return <View testID="test">{String(count.isDone)}</View>;
+        });
+
+        render(<Component />);
+
+        expect(fn).toBeCalledTimes(1);
+        expect(screen.getByTestId("test")).toHaveTextContent("false");
+        await act(async () => {
+          count.done();
+          delay(delayMs);
+        });
+        expect(fn).toBeCalledTimes(2);
+        expect(screen.getByTestId("test")).toHaveTextContent("true");
+        await act(async () => {
+          count.done();
+          delay(delayMs);
+        });
+        expect(fn).toBeCalledTimes(2); // should not be called
+        expect(screen.getByTestId("test")).toHaveTextContent("true");
+      });
+
+      it("computed nested deep", async () => {
+        class Count {
+          nest = {
+            a: {
+              b: {
+                c: 100,
+              },
+            },
+            d: {},
+          };
+
+          get a() {
+            return this.nest.a;
+          }
+
+          change() {
+            this.nest.a.b.c = 99;
+          }
+        }
+
+        const count = createStore(new Count());
+
+        const Component = observe(() => {
+          return <View testID="test">{count.a.b.c}</View>;
+        });
+
+        render(<Component />);
+
+        expect(screen.getByTestId("test")).toHaveTextContent("100");
+        await act(async () => {
+          count.change();
+          delay(delayMs);
+        });
+        expect(screen.getByTestId("test")).toHaveTextContent("99");
       });
     });
 
@@ -1183,6 +1316,10 @@ export const makeTest = (View: any, isNative = false) => {
         expect(() => Object.defineProperty(count, "count", {})).toThrow(
           'You should not do "defineProperty" of a store!'
         );
+      });
+
+      it("subscribeStore", () => {
+        // TODO
       });
     });
 

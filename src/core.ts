@@ -18,6 +18,7 @@ const STATE = Symbol("state");
 const ADMIN = Symbol("admin");
 const INNER = Symbol("inner");
 const OBSERVED = Symbol("observed");
+const UNSET = Symbol("unset");
 
 type Subscriber = () => void;
 type SubscribeListener = (names: Set<string>) => void;
@@ -34,23 +35,24 @@ interface CreateStoreOptions {
 
 interface Prop {
   name: string;
-  isKeys: boolean;
-  computers: Set<Computed>;
+  isKeys?: boolean;
+  subscribeComputers: Set<Prop>;
   subscribers: Set<Subscriber>;
   deepSubscribers: Set<Subscriber>;
   keysProp?: Prop;
+  computed?: Computed;
 }
 
 interface Computed {
-  name: string;
+  changed: boolean;
   getter: () => any;
   value: any;
-  changed: boolean;
-  deps: Set<Prop>;
+  unsubscribers: Set<Unsubscriber>;
 }
 
 interface State {
   name: string;
+  storeName: string;
   parent?: State;
   base?: any;
   copy?: any;
@@ -66,21 +68,14 @@ interface Store {
 }
 
 interface StoreAdmin {
-  computed: Record<string, Computed>;
   subscribeListeners: Set<SubscribeListener>;
   innerStore: Store;
-  storeName: string;
 }
 
 interface StoreRef {
   onDepend: ReportDepend;
   unsubscribe: Unsubscriber;
   unsubscribeList: Unsubscriber[];
-}
-
-interface handleChangedParam {
-  state: State;
-  storeName: string;
 }
 
 let storeOptions: ConfigStoreOptions = {
@@ -104,7 +99,7 @@ let createStoreCount = 0;
 // 所有被监听的props，以store分割，以提高效率 { storeName: { propName: Prop } ... }
 // 特例：.keys()
 let storeProps: Record<string, Record<string, Prop>> = {};
-let computedTarget: Computed[] = [];
+let computedTarget: Prop[] = [];
 let reportDepend: ReportDepend;
 let batchedUpdateList: Set<Subscriber> = new Set();
 let batchedUpdateScheduled = false;
@@ -112,6 +107,8 @@ let pendingChanged: Map<
   Prop,
   { prop: Prop; state: State; admin: StoreAdmin; propName: string }
 > = new Map();
+let pendingChangedComputed: Map<Prop, any> = new Map();
+let pendingComputedObserved: Map<Prop, Set<Prop>> = new Map();
 
 /* istanbul ignore next */
 function resetStore() {
@@ -121,6 +118,8 @@ function resetStore() {
   batchedUpdateList = new Set();
   batchedUpdateScheduled = false;
   pendingChanged = new Map();
+  pendingChangedComputed = new Map();
+  pendingComputedObserved = new Map();
 }
 
 function getStoreProp(storeName: string, name: string, isKeys = false) {
@@ -135,7 +134,7 @@ function getStoreProp(storeName: string, name: string, isKeys = false) {
       prop = props[name] = {
         name,
         isKeys: true,
-        computers: new Set(),
+        subscribeComputers: new Set(),
         subscribers: new Set(),
         deepSubscribers: new Set(),
       };
@@ -146,8 +145,7 @@ function getStoreProp(storeName: string, name: string, isKeys = false) {
     if (!prop) {
       prop = props[name] = {
         name,
-        isKeys: false,
-        computers: new Set(),
+        subscribeComputers: new Set(),
         subscribers: new Set(),
         deepSubscribers: new Set(),
       };
@@ -155,6 +153,79 @@ function getStoreProp(storeName: string, name: string, isKeys = false) {
   }
 
   return prop;
+}
+
+function getComputedValue(computedProp: Prop) {
+  const { computed } = computedProp;
+
+  if (computed.changed) {
+    // 如改变，则重新收集依赖
+    computed.unsubscribers.forEach((fn) => fn());
+    computed.unsubscribers.clear();
+
+    try {
+      computedTarget.push(computedProp);
+      const newValue = computed.getter(); // maybe exception
+
+      if (computed.value !== UNSET && newValue !== computed.value) {
+        if (pendingChangedComputed.has(computedProp)) {
+          // 如恢复原始值，从map中删除
+          const originalValue = pendingChangedComputed.get(computedProp);
+          if (originalValue === newValue) {
+            pendingChangedComputed.delete(computedProp);
+          }
+        } else {
+          // 存储原始值
+          pendingChangedComputed.set(computedProp, computed.value);
+        }
+      }
+
+      computed.value = newValue;
+
+      // if computed return store, observe it
+      if (typeof computed.value === "object") {
+        const state: State = computed.value[STATE];
+        if (state) {
+          const prop = getStoreProp(state.storeName, state.name);
+          if (!pendingComputedObserved.has(computedProp)) {
+            pendingComputedObserved.set(computedProp, new Set());
+          }
+          pendingComputedObserved.get(computedProp).add(prop);
+        }
+      }
+    } finally {
+      computed.changed = false;
+      computedTarget.pop();
+    }
+  }
+
+  return computed.value;
+}
+
+function computedChanged(computedProp: Prop) {
+  computedProp.computed.changed = true;
+
+  if (computedProp.subscribeComputers?.size) {
+    computedProp.subscribeComputers.forEach(computedChanged);
+  }
+}
+
+function isStateChanged(state: State, propName: string) {
+  return (
+    state.base &&
+    state.copy &&
+    typeof state.base === "object" &&
+    state.base[propName] !== state.copy[propName]
+  );
+}
+
+function isStateKeysChanged(state: State, propName: string) {
+  return (
+    state.base &&
+    state.copy &&
+    typeof state.base === "object" &&
+    propName in state.base !== propName in state.copy
+  );
 }
 
 function createStore<T extends Record<string, any>>(
@@ -177,10 +248,8 @@ function createStore<T extends Record<string, any>>(
   };
 
   const admin: StoreAdmin = {
-    computed: {},
     subscribeListeners: new Set(),
     innerStore: null,
-    storeName,
   };
 
   const getProp = (name: string, isKeys = false) =>
@@ -209,9 +278,10 @@ function createStore<T extends Record<string, any>>(
 
     // handle computed
     if (computedTarget.length) {
-      computedTarget.forEach((computed) => {
-        prop.computers.add(computed);
-        computed.deps.add(prop);
+      const target = computedTarget[computedTarget.length - 1];
+      prop.subscribeComputers.add(target);
+      target.computed.unsubscribers.add(() => {
+        prop.subscribeComputers.delete(target);
       });
     }
 
@@ -220,11 +290,17 @@ function createStore<T extends Record<string, any>>(
     }
   };
 
-  const createProxy = (target: any, name: string, parent: State) => {
+  const createProxy = (
+    target: any,
+    name: string,
+    parent: State,
+    storeName: string
+  ) => {
     logger.log(`create proxy: ${name}`);
 
     const state: State = {
       name,
+      storeName,
       parent,
       base: target,
     };
@@ -263,7 +339,7 @@ function createStore<T extends Record<string, any>>(
     const name = `${state.name}.${prop}`;
     logger.log(`${isDelete ? "delete" : "set"} ${name}`);
 
-    const computed = state.isRoot && admin.computed[name];
+    const computed = state.isRoot && getProp(name).computed;
     if (computed) {
       die(`You should not set or delete computed props(${name})!`);
     }
@@ -279,25 +355,28 @@ function createStore<T extends Record<string, any>>(
 
       const sProp = getProp(name);
 
-      // handle computed
-      // computed should be updated immediately because it's value maybe used immediately
-      // prop self
-      sProp?.computers.forEach((sub) => (sub.changed = true));
-      // prop keys
-      const keysProp = getKeysProp(name);
-      keysProp?.computers.forEach((sub) => (sub.changed = true));
-
       // handle state
+      if (!state.copy) {
+        state.copy = clone(state.base);
+      }
+      isDelete ? delete state.copy[prop] : (state.copy[prop] = value);
       pendingChanged.set(sProp, {
         prop: sProp,
         state,
         admin,
         propName: prop,
       });
-      if (!state.copy) {
-        state.copy = clone(state.base);
+
+      // handle computed
+      // computed should be updated immediately because it's value maybe used immediately
+      // prop self
+      sProp.subscribeComputers.forEach(computedChanged);
+      // prop keys
+      if (isStateKeysChanged(state, prop)) {
+        // 此处调用getKeysProp以建立keys <--> prop的连接
+        const keysProp = getKeysProp(name);
+        keysProp?.subscribeComputers.forEach(computedChanged);
       }
-      isDelete ? delete state.copy[prop] : (state.copy[prop] = value);
 
       // 改变后触发finalize, finalize内部会做延迟合并处理
       finalize();
@@ -341,39 +420,22 @@ function createStore<T extends Record<string, any>>(
         }
 
         const name = `${state.name}.${prop}`;
-        const computed = state.isRoot && admin.computed[name];
+        const sProp = getProp(name);
 
         let value: any;
 
-        if (computed) {
-          if (computed.changed) {
-            // 如改变，则重新收集依赖
-            computed.deps.forEach((prop) => prop.computers.delete(computed));
-            computed.deps.clear();
-
-            computedTarget.push(computed);
-            try {
-              computed.value = computed.getter(); // maybe exception
-            } finally {
-              computed.changed = false;
-              computedTarget.pop();
-            }
-          } else {
-            // 未改变，将当前的依赖作为其他collectTarget的依赖
-            computed.deps.forEach((prop) =>
-              reportSubscribe(prop.name, { isKeys: prop.isKeys })
-            );
-          }
-          return computed.value;
+        if (sProp.computed) {
+          value = getComputedValue(sProp);
+        } else {
+          value = source[prop];
         }
 
-        value = source[prop];
         if (typeof value !== "function") {
-          // computed、action不用subscribe
+          // action不用subscribe
           reportSubscribe(name);
         }
 
-        if (!value || typeof value !== "object") {
+        if (!value || typeof value !== "object" || sProp.computed) {
           return value;
         }
 
@@ -381,7 +443,7 @@ function createStore<T extends Record<string, any>>(
         const valueState: State = value[STATE];
 
         if (!valueState) {
-          value = source[prop] = createProxy(value, name, state);
+          value = source[prop] = createProxy(value, name, state, storeName);
         } else if (valueState.expired) {
           delete valueState.expired;
           value = source[prop] = cloneProxy(valueState);
@@ -399,7 +461,7 @@ function createStore<T extends Record<string, any>>(
       },
 
       getPrototypeOf(state) {
-        return Object.getPrototypeOf(state.base);
+        return Object.getPrototypeOf(latest(state));
       },
 
       setPrototypeOf() {
@@ -480,6 +542,7 @@ function createStore<T extends Record<string, any>>(
   // root state
   const state: State = {
     name: storeName,
+    storeName,
     base: target,
     isRoot: true,
   };
@@ -508,12 +571,12 @@ function createStore<T extends Record<string, any>>(
     if (desc.get) {
       // handle computed
       const name = `${storeName}.${key}`;
-      admin.computed[name] = {
-        name,
-        getter: desc.get.bind(outerStore),
-        value: undefined,
+      const prop = getProp(name);
+      prop.computed = {
         changed: true,
-        deps: new Set(),
+        getter: desc.get.bind(outerStore),
+        value: UNSET,
+        unsubscribers: new Set(),
       };
     } else {
       // handle actions
@@ -546,7 +609,7 @@ function subscribeStore(store: Store, listener: SubscribeListener) {
   return () => admin.subscribeListeners.delete(listener);
 }
 
-function handleChanged({ state, storeName }: handleChangedParam) {
+function handleStateChain(state: State, changedList: Set<Prop>) {
   state.expired = true;
 
   if (state.copy) {
@@ -554,14 +617,39 @@ function handleChanged({ state, storeName }: handleChangedParam) {
     delete state.copy;
   }
 
-  const props = storeProps[storeName];
-  const prop = props[state.name];
-  if (prop?.deepSubscribers?.size) {
+  const prop = getStoreProp(state.storeName, state.name);
+  if (prop.deepSubscribers?.size) {
     prop.deepSubscribers.forEach((sub) => batchedUpdateList.add(sub));
   }
+  changedList.add(prop);
 
   if (state.parent) {
-    handleChanged({ state: state.parent, storeName });
+    handleStateChain(state.parent, changedList);
+  }
+}
+
+function handleDirectChanged(prop: Prop) {
+  if (prop.subscribers.size) {
+    let changed = true;
+
+    // 当外部组件依赖computed时，需要对computed进行即时计算，以识别值是否改变，是否需要刷新组件
+    if (prop.computed) {
+      if (prop.computed.changed) {
+        getComputedValue(prop);
+        changed = pendingChangedComputed.has(prop);
+      } else {
+        changed = false;
+      }
+    }
+
+    if (changed) {
+      prop.subscribers.forEach((sub) => batchedUpdateList.add(sub));
+    }
+  }
+
+  // maybe trigger computed
+  if (prop.subscribeComputers.size) {
+    prop.subscribeComputers.forEach(handleDirectChanged);
   }
 }
 
@@ -576,43 +664,71 @@ function finalize() {
       /* istanbul ignore next */
       if (!pendingChanged.size) return;
 
-      const changedStates = new Map<Prop, handleChangedParam>();
-      const names = new Set<string>();
-      const subscribeListeners = new Set<SubscribeListener>();
+      const changedDirectStates = new Map<Prop, State>();
+      const changedAllProps = new Set<Prop>();
+      const changedStoreNames = new Set<string>();
+      const adminSubscribes = new Map<StoreAdmin, Set<string>>();
+
       pendingChanged.forEach(({ prop, state, admin, propName }) => {
-        if (
-          state.base &&
-          state.copy &&
-          typeof state.base === "object" &&
-          state.base[propName] !== state.copy[propName]
-        ) {
+        if (isStateChanged(state, propName)) {
           // changed
-          changedStates.set(prop, { state, storeName: admin.storeName });
-          names.add(admin.storeName);
-          admin.subscribeListeners.forEach((sub) =>
-            subscribeListeners.add(sub)
-          );
-          prop.subscribers.forEach((sub) => batchedUpdateList.add(sub));
-          prop.keysProp?.subscribers.forEach((sub) =>
-            batchedUpdateList.add(sub)
-          );
+          changedStoreNames.add(state.storeName);
+          changedDirectStates.set(prop, state);
+          changedAllProps.add(prop);
+
+          if (prop.keysProp && isStateKeysChanged(state, propName)) {
+            changedDirectStates.set(prop.keysProp, null);
+            changedAllProps.add(prop.keysProp);
+          }
+
+          if (!adminSubscribes.has(admin)) {
+            adminSubscribes.set(admin, new Set());
+          }
+          adminSubscribes.get(admin).add(prop.name);
         }
       });
       pendingChanged.clear();
 
-      if (!changedStates.size) {
+      if (!changedDirectStates.size) {
+        pendingComputedObserved.clear();
+        pendingChangedComputed.clear();
         return;
       }
 
-      logger.log("finalize...", ...names);
+      logger.log("finalize...", ...changedStoreNames);
 
-      changedStates.forEach(handleChanged);
+      // 首先将所有prop state成功设置，后续计算computed时将可以获得最新值
+      // 同时将所有改变的props收集（包括直接和间接），便于后续computed计算使用
+      changedDirectStates.forEach(
+        (state) => state && handleStateChain(state, changedAllProps)
+      );
 
-      if (subscribeListeners.size) {
-        const names = new Set(
-          [...changedStates.keys()].map((prop) => prop.name)
+      // 如果computed直接返回store prop，会将其记录到该map中
+      // 在finalize时，该prop值可能改变，此时需要将该computed及其被依赖的所有computed都设置为changed=true，以便于后续重新计算获取最新值
+      pendingComputedObserved.forEach((props, computedProp) => {
+        for (let prop of props) {
+          if (changedAllProps.has(prop)) {
+            computedChanged(computedProp);
+            return;
+          }
+        }
+      });
+
+      // 收集batchedUpdateList
+      // 包括prop和computed触发
+      // 如果由prop触发，直接加入batchedUpdateList
+      // 如果由computed触发，会计算该computed，将值与之前的值进行对比，不相等时才加入batchedUpdateList
+      changedDirectStates.forEach((_, prop) => {
+        handleDirectChanged(prop);
+      });
+      // 清空pending项
+      pendingComputedObserved.clear();
+      pendingChangedComputed.clear();
+
+      if (adminSubscribes.size) {
+        adminSubscribes.forEach((names, admin) =>
+          admin.subscribeListeners.forEach((listener) => listener(names))
         );
-        subscribeListeners.forEach((listener) => listener(names));
       }
 
       if (batchedUpdateList.size) {
@@ -707,11 +823,10 @@ function observe<T>(fc: T) {
 
     // observe store prop
     if (reportDepend) {
-      const admin = (fc as unknown as Store)[ADMIN];
       const state = (fc as unknown as Store)[STATE];
       /* istanbul ignore else */
-      if (admin && state) {
-        const prop = getStoreProp(admin.storeName, state.name);
+      if (state) {
+        const prop = getStoreProp(state.storeName, state.name);
         reportDepend(prop, { isDeep: true });
         return fc;
       }
