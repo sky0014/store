@@ -10,6 +10,7 @@ import {
   createStore,
   observe,
   observeAndMemo,
+  subscribeStore,
 } from "../../src";
 import { delay } from "../../src/util";
 
@@ -789,6 +790,7 @@ export const makeTest = (View: any, isNative = false) => {
 
           change() {
             this.nest["c"] = 3;
+            this.nest["c"] = 4;
           }
 
           change2() {
@@ -984,6 +986,49 @@ export const makeTest = (View: any, isNative = false) => {
         });
         expect(fn).toBeCalledTimes(2); // should not be called
         expect(screen.getByTestId("test")).toHaveTextContent("true");
+      });
+
+      it("computed trigger re-render 2", async () => {
+        const fn = jest.fn();
+
+        class Count {
+          count = 0;
+
+          get count2() {
+            return this.count * 2;
+          }
+
+          change(n: number) {
+            this.count = n;
+          }
+        }
+
+        const count = createStore(new Count());
+
+        const Component = observe(() => {
+          fn();
+          return <View testID="test">{String(count.count2)}</View>;
+        });
+
+        render(<Component />);
+
+        expect(fn).toBeCalledTimes(1);
+        expect(screen.getByTestId("test")).toHaveTextContent("0");
+        await act(async () => {
+          count.change(1);
+          delay(delayMs);
+        });
+        expect(fn).toBeCalledTimes(2);
+        expect(screen.getByTestId("test")).toHaveTextContent("2");
+        await act(async () => {
+          count.change(2);
+          expect(count.count2).toBe(4);
+          count.change(1); // restore computed
+          expect(count.count2).toBe(2);
+          delay(delayMs);
+        });
+        expect(fn).toBeCalledTimes(2); // should not be called
+        expect(screen.getByTestId("test")).toHaveTextContent("2");
       });
 
       it("computed nested deep", async () => {
@@ -1318,8 +1363,41 @@ export const makeTest = (View: any, isNative = false) => {
         );
       });
 
-      it("subscribeStore", () => {
-        // TODO
+      it("subscribeStore", async () => {
+        class Count {
+          a = 1;
+
+          nest = {
+            a: {
+              b: 100,
+            },
+          };
+
+          change1(n: number) {
+            this.a = n;
+          }
+
+          change2() {
+            this.nest.a["c"] = 99;
+          }
+        }
+
+        const count = createStore(new Count());
+
+        const fn = jest.fn();
+
+        subscribeStore(count, (names) => {
+          fn([...names].map((name) => name.split(".").slice(1).join(".")));
+        });
+        count.change1(2);
+        await delay(delayMs);
+        expect(fn).toHaveBeenCalledWith(["a"]);
+
+        fn.mockClear();
+        count.change1(3);
+        count.change2();
+        await delay(delayMs);
+        expect(fn).toHaveBeenCalledWith(["a", "nest.a.c"]);
       });
     });
 

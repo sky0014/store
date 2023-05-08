@@ -187,6 +187,7 @@ function getComputedValue(computedProp: Prop) {
         const state: State = computed.value[STATE];
         if (state) {
           const prop = getStoreProp(state.storeName, state.name);
+          /* istanbul ignore else */
           if (!pendingComputedObserved.has(computedProp)) {
             pendingComputedObserved.set(computedProp, new Set());
           }
@@ -681,10 +682,12 @@ function finalize() {
             changedAllProps.add(prop.keysProp);
           }
 
-          if (!adminSubscribes.has(admin)) {
-            adminSubscribes.set(admin, new Set());
+          if (admin.subscribeListeners.size) {
+            if (!adminSubscribes.has(admin)) {
+              adminSubscribes.set(admin, new Set());
+            }
+            adminSubscribes.get(admin).add(prop.name);
           }
-          adminSubscribes.get(admin).add(prop.name);
         }
       });
       pendingChanged.clear();
