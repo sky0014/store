@@ -38,3 +38,18 @@ export function getFunctions(target: Record<string, any>) {
   }
   return map;
 }
+
+export function replaceWithKeys(name: string) {
+  const arr = name.split(".");
+  arr[arr.length - 1] = "keys()";
+  return arr.join(".");
+}
+
+export function arrayPatch<T extends object>(handle: ProxyHandler<T>) {
+  const arrayHandle: ProxyHandler<T> = {};
+  Object.keys(handle).forEach((key) => {
+    // @ts-ignore
+    arrayHandle[key] = (stateArr, ...args) => handle[key](stateArr[0], ...args);
+  });
+  return arrayHandle;
+}

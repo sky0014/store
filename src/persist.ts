@@ -61,6 +61,7 @@ export async function persist<T extends Store>(
   };
 
   // 读取本地存储
+  let readFromLocal = false;
   try {
     const stored = await options.storage.getItem(options.key);
     if (stored) {
@@ -81,6 +82,7 @@ export async function persist<T extends Store>(
           }
         });
       });
+      readFromLocal = true;
     }
   } catch (e) {
     logger.warn(`read storage data error: `, e);
@@ -95,8 +97,8 @@ export async function persist<T extends Store>(
   let cur: Promise<void>;
   let next: Promise<void>;
 
-  const flush = async () => {
-    if (!hasChanged) {
+  const flush = async (force = false) => {
+    if (!hasChanged && !force) {
       if (isStoring) {
         return cur;
       }
@@ -120,7 +122,7 @@ export async function persist<T extends Store>(
       data,
     };
     const dataStr = JSON.stringify(storeData);
-    logger.log("set storage: ", dataStr);
+    logger.log("set storage");
 
     cur = Promise.resolve()
       .then(() => options.storage.setItem(options.key, dataStr))
@@ -163,6 +165,11 @@ export async function persist<T extends Store>(
       checkStore();
     }
   });
+
+  // 初始化写入
+  if (!readFromLocal) {
+    await flush(true);
+  }
 
   return { flush, cancel };
 }
