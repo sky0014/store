@@ -39,6 +39,18 @@ export function getFunctions(target: Record<string, any>) {
   return map;
 }
 
+export function getDescriptor(target: any, prop: string) {
+  let that = target;
+  while (that && that !== Object.prototype) {
+    const config = Object.getOwnPropertyDescriptor(that, prop);
+    if (config) {
+      return config;
+    }
+    that = Object.getPrototypeOf(that);
+  }
+  return null;
+}
+
 export function replaceWithKeys(name: string) {
   const arr = name.split(".");
   arr[arr.length - 1] = "keys()";
@@ -53,3 +65,10 @@ export function arrayPatch<T extends object>(handle: ProxyHandler<T>) {
   });
   return arrayHandle;
 }
+
+export type ParametersExceptFirst<T extends (...args: any) => any> = T extends (
+  arg0: any,
+  ...args: infer P
+) => any
+  ? P
+  : never;

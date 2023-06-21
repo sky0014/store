@@ -438,12 +438,18 @@ export const makeTest = (View: any, isNative = false) => {
         class Count {
           _count = 0;
 
+          get count() {
+            return this._count;
+          }
+
           set count(val: number) {
             this._count = val;
           }
         }
 
-        expect(() => createStore(new Count())).toThrow("Do not allow setter");
+        const count = createStore(new Count());
+
+        expect(() => count.count).toThrow("Do not allow setter");
       });
 
       it("should not delete or set symbol props", () => {
@@ -1055,6 +1061,43 @@ export const makeTest = (View: any, isNative = false) => {
 
         const Component = observe(() => {
           return <View testID="test">{count.a.b.c}</View>;
+        });
+
+        render(<Component />);
+
+        expect(screen.getByTestId("test")).toHaveTextContent("100");
+        await act(async () => {
+          count.change();
+          delay(delayMs);
+        });
+        expect(screen.getByTestId("test")).toHaveTextContent("99");
+      });
+
+      it("computed nested deep 2", async () => {
+        class Nest {
+          a = {
+            b: {
+              c: 100,
+            },
+          };
+
+          get c() {
+            return this.a.b.c;
+          }
+        }
+
+        class Count {
+          nest = new Nest();
+
+          change() {
+            this.nest.a.b.c = 99;
+          }
+        }
+
+        const count = createStore(new Count());
+
+        const Component = observe(() => {
+          return <View testID="test">{count.nest.c}</View>;
         });
 
         render(<Component />);
