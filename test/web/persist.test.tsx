@@ -1,5 +1,15 @@
-import { PersistStorage, createStore, persist } from "../../src";
+import { PersistStorage, createStore, persist, serial } from "../../src";
 import { delay } from "../../src/util";
+
+class Item {
+  a = 100;
+
+  get b() {
+    return 101;
+  }
+}
+
+serial.register({ Item });
 
 class Count {
   a = 0;
@@ -336,6 +346,43 @@ const makeTest = (
         count: 0,
       },
     });
+  });
+
+  it("read class from storage", async () => {
+    class Count {
+      items = [new Item()];
+
+      change() {
+        this.items[0].a = 200;
+      }
+    }
+
+    const count = createStore(new Count());
+    expect(count.items[0].a).toBe(100);
+    expect(count.items[0].b).toBe(101);
+
+    const { cancel } = await persist(count, {
+      key: "count",
+      ver: 0,
+      storage: mockStorage,
+    });
+
+    count.change();
+    expect(count.items[0].a).toBe(200);
+    expect(count.items[0].b).toBe(101);
+    await delay(wait);
+    cancel();
+
+    const count2 = createStore(new Count()); // new store
+    const { cancel: cancel2 } = await persist(count2, {
+      key: "count",
+      ver: 0,
+      storage: mockStorage,
+    });
+    expect(count2.items[0] instanceof Item).toBe(true);
+    expect(count2.items[0].a).toBe(200);
+    expect(count2.items[0].b).toBe(101);
+    cancel2();
   });
 };
 

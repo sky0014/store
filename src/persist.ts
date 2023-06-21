@@ -1,6 +1,7 @@
 import promiseFinally from "promise.prototype.finally";
 import { subscribeStore, innerProduce, logger as _logger, Store } from "./core";
 import { delay } from "./util";
+import { parse, stringify } from "./serialize";
 
 promiseFinally.shim();
 
@@ -67,7 +68,7 @@ export async function persist<T extends Store>(
     if (stored) {
       logger.log("read from storage: ", stored);
 
-      let json = JSON.parse(stored) as StoreData;
+      let json = parse(stored) as StoreData;
       if (!json.__store__) {
         throw new Error(`invalid store data: ${stored}`);
       }
@@ -121,7 +122,7 @@ export async function persist<T extends Store>(
       ver: options.ver,
       data,
     };
-    const dataStr = JSON.stringify(storeData);
+    const dataStr = stringify(storeData);
     logger.log("set storage");
 
     cur = Promise.resolve()

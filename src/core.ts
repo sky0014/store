@@ -10,7 +10,14 @@ import {
   useRef,
 } from "react";
 import { createLogger } from "@sky0014/logger";
-import { arrayPatch, clone, getFunctions, replaceWithKeys } from "./util";
+import {
+  ParametersExceptFirst,
+  arrayPatch,
+  clone,
+  getDescriptor,
+  getFunctions,
+  replaceWithKeys,
+} from "./util";
 import unstable_batchedUpdates from "unstable_batchedupdates";
 
 const LIB_NAME = "store";
@@ -96,6 +103,8 @@ function configStore(options: ConfigStoreOptions) {
 // globals
 // store计数
 let createStoreCount = 0;
+// 所有创建的store
+let stores: Record<string, Store & Record<string, any>> = {};
 // 所有被监听的props，以store分割，以提高效率 { storeName: { propName: Prop } ... }
 // 特例：.keys()
 let storeProps: Record<string, Record<string, Prop>> = {};
@@ -112,6 +121,7 @@ let pendingComputedObserved: Map<Prop, Set<Prop>> = new Map();
 
 /* istanbul ignore next */
 function resetStore() {
+  stores = {};
   storeProps = {};
   computedTarget = [];
   reportDepend = undefined;
@@ -122,7 +132,12 @@ function resetStore() {
   pendingComputedObserved = new Map();
 }
 
-function getStoreProp(storeName: string, name: string, isKeys = false) {
+function getStoreProp(
+  storeName: string,
+  name: string,
+  isKeys = false,
+  init: (prop: Prop) => void = null
+) {
   let props = storeProps[storeName];
   let prop: Prop;
 
@@ -149,10 +164,29 @@ function getStoreProp(storeName: string, name: string, isKeys = false) {
         subscribers: new Set(),
         deepSubscribers: new Set(),
       };
+      init && init(prop);
     }
   }
 
   return prop;
+}
+
+function getPropValue(propName: string) {
+  const arr = propName.split(".");
+  const len = arr.length;
+
+  let v: any = stores[arr[0]];
+  for (let i = 1; i < len; i++) {
+    v = v[arr[i]];
+  }
+
+  return v;
+}
+
+function getComputedThis(computedProp: Prop) {
+  const { name } = computedProp;
+  const arr = name.split(".");
+  return getPropValue(arr.slice(0, arr.length - 1).join("."));
 }
 
 function getComputedValue(computedProp: Prop) {
@@ -165,7 +199,7 @@ function getComputedValue(computedProp: Prop) {
 
     try {
       computedTarget.push(computedProp);
-      const newValue = computed.getter(); // maybe exception
+      const newValue = computed.getter.apply(getComputedThis(computedProp)); // maybe exception
 
       if (computed.value !== UNSET && newValue !== computed.value) {
         if (pendingChangedComputed.has(computedProp)) {
@@ -253,8 +287,8 @@ function createStore<T extends Record<string, any>>(
     innerStore: null,
   };
 
-  const getProp = (name: string, isKeys = false) =>
-    getStoreProp(storeName, name, isKeys);
+  const getProp = (...args: ParametersExceptFirst<typeof getStoreProp>) =>
+    getStoreProp(storeName, ...args);
 
   const getKeysProp = (name: string) => {
     const prop = props[name];
@@ -340,12 +374,12 @@ function createStore<T extends Record<string, any>>(
     const name = `${state.name}.${prop}`;
     logger.log(`${isDelete ? "delete" : "set"} ${name}`);
 
-    const computed = state.isRoot && getProp(name).computed;
+    const source = latest(state);
+    const computed = getProp(name, false, initComputed(source, prop)).computed;
     if (computed) {
       die(`You should not set or delete computed props(${name})!`);
     }
 
-    const source = latest(state);
     if (
       isDelete
         ? prop in source
@@ -386,6 +420,24 @@ function createStore<T extends Record<string, any>>(
     return true;
   };
 
+  const initComputed = (source: any, propName: string) => (prop: Prop) => {
+    const desc = getDescriptor(source, propName);
+
+    if (desc?.get) {
+      // handle computed
+      prop.computed = {
+        changed: true,
+        getter: desc.get,
+        value: UNSET,
+        unsubscribers: new Set(),
+      };
+    }
+
+    if (desc?.set) {
+      die(`Do not allow setter(${prop.name}) in Store!`);
+    }
+  };
+
   const makeHandler = ({ inner }: { inner: boolean }) => {
     const handler: ProxyHandler<State> = {
       get(state, prop, receiver) {
@@ -402,8 +454,7 @@ function createStore<T extends Record<string, any>>(
         }
 
         if (prop === "toJSON") {
-          // return () => latest(state);
-          return undefined;
+          return state.base?.toJSON;
         }
 
         const source = latest(state);
@@ -421,7 +472,7 @@ function createStore<T extends Record<string, any>>(
         }
 
         const name = `${state.name}.${prop}`;
-        const sProp = getProp(name);
+        const sProp = getProp(name, false, initComputed(source, prop));
 
         let value: any;
 
@@ -564,31 +615,14 @@ function createStore<T extends Record<string, any>>(
   const map = getFunctions(target);
   Object.keys(map).some((key) => {
     const desc = map[key];
-
-    if (desc.set) {
-      die(`Do not allow setter(${key}) in Store!`);
-    }
-
-    if (desc.get) {
-      // handle computed
-      const name = `${storeName}.${key}`;
-      const prop = getProp(name);
-      prop.computed = {
-        changed: true,
-        getter: desc.get.bind(outerStore),
-        value: UNSET,
-        unsubscribers: new Set(),
+    // handle actions
+    if (typeof desc.value === "function") {
+      const func = desc.value.bind(innerStore);
+      // @ts-ignore
+      target[key] = (...args: any[]) => {
+        logger.log(`call action: ${storeName}.${key}`, ...args);
+        return func(...args);
       };
-    } else {
-      // handle actions
-      if (typeof desc.value === "function") {
-        const func = desc.value.bind(innerStore);
-        // @ts-ignore
-        target[key] = (...args: any[]) => {
-          logger.log(`call action: ${storeName}.${key}`, ...args);
-          return func(...args);
-        };
-      }
     }
   });
 
@@ -596,6 +630,9 @@ function createStore<T extends Record<string, any>>(
   admin.innerStore = innerStore as any as Store;
 
   const store = outerStore as any as T & Store;
+
+  // save stores
+  stores[storeName] = store;
 
   return store;
 }
