@@ -1,4 +1,5 @@
-import { PersistStorage, createStore, persist, serial } from "../../src";
+import serial from "@sky0014/serial";
+import { PersistStorage, createStore, persist } from "../../src";
 import { delay } from "../../src/util";
 
 class Item {

@@ -1,6 +1,6 @@
 {
   "name": "@sky0014/store",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "An easy store for react and hooks.",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -82,6 +82,7 @@
   },
   "dependencies": {
     "@sky0014/logger": "^1.0.7",
+    "@sky0014/serial": "^1.0.1",
     "promise.prototype.finally": "^3.1.4",
     "unstable_batchedupdates": "^1.0.2"
   },
