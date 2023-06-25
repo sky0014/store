@@ -1,7 +1,7 @@
 import promiseFinally from "promise.prototype.finally";
 import { subscribeStore, innerProduce, logger as _logger, Store } from "./core";
 import { delay } from "./util";
-import { parse, stringify } from "./serialize";
+import serial from "@sky0014/serial";
 
 promiseFinally.shim();
 
@@ -68,7 +68,7 @@ export async function persist<T extends Store>(
     if (stored) {
       logger.log("read from storage: ", stored);
 
-      let json = parse(stored) as StoreData;
+      let json = serial.parse(stored) as StoreData;
       if (!json.__store__) {
         throw new Error(`invalid store data: ${stored}`);
       }
@@ -122,7 +122,7 @@ export async function persist<T extends Store>(
       ver: options.ver,
       data,
     };
-    const dataStr = stringify(storeData);
+    const dataStr = serial.stringify(storeData);
     logger.log("set storage");
 
     cur = Promise.resolve()

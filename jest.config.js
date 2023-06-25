@@ -2,7 +2,9 @@
 
 const web = {
   testEnvironment: "jsdom",
-  transformIgnorePatterns: ["/node_modules/(?!unstable_batchedupdates)"],
+  transformIgnorePatterns: [
+    "/node_modules/(?!(unstable_batchedupdates|@sky0014/serial))",
+  ],
   setupFilesAfterEnv: ["@testing-library/jest-dom/"],
   testMatch: ["<rootDir>/test/web/**/*.[jt]s?(x)"],
 };
@@ -30,7 +32,7 @@ const rn = {
   preset: "react-native",
   testMatch: ["<rootDir>/test/native/**/*.[jt]s?(x)"],
   transformIgnorePatterns: [
-    "/node_modules/(?!(@react-native|react-native|unstable_batchedupdates)/).*",
+    "/node_modules/(?!(@react-native|react-native|unstable_batchedupdates|@sky0014/serial)/).*",
   ],
   transform: {
     // overwrite react-native jest-preset transform key (^.+\\.(js|ts|tsx)$)
