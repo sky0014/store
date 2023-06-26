@@ -66,7 +66,7 @@ export async function persist<T extends Store>(
   try {
     const stored = await options.storage.getItem(options.key);
     if (stored) {
-      logger.log("read from storage: ", stored);
+      logger.log(`read storage`);
 
       let json = serial.parse(stored) as StoreData;
       if (!json.__store__) {
@@ -123,7 +123,7 @@ export async function persist<T extends Store>(
       data,
     };
     const dataStr = serial.stringify(storeData);
-    logger.log("set storage");
+    logger.log(`set storage`);
 
     cur = Promise.resolve()
       .then(() => options.storage.setItem(options.key, dataStr))
