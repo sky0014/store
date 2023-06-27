@@ -5,9 +5,10 @@ import {
   NamedExoticComponent,
   createElement,
   memo,
+  useCallback,
   useEffect,
-  useReducer,
   useRef,
+  useState,
 } from "react";
 import { createLogger } from "@sky0014/logger";
 import {
@@ -193,13 +194,20 @@ function getComputedValue(computedProp: Prop) {
   const { computed } = computedProp;
 
   if (computed.changed) {
+    // 兼容处理：上级已被删除时，返回旧值
+    const that = getComputedThis(computedProp);
+    if (!that) {
+      return computed.value;
+    }
+
     // 如改变，则重新收集依赖
     computed.unsubscribers.forEach((fn) => fn());
     computed.unsubscribers.clear();
 
     try {
       computedTarget.push(computedProp);
-      const newValue = computed.getter.apply(getComputedThis(computedProp)); // maybe exception
+
+      const newValue = computed.getter.apply(that); // maybe exception
 
       if (computed.value !== UNSET && newValue !== computed.value) {
         if (pendingChangedComputed.has(computedProp)) {
@@ -375,7 +383,8 @@ function createStore<T extends Record<string, any>>(
     logger.log(`${isDelete ? "delete" : "set"} ${name}`);
 
     const source = latest(state);
-    const computed = getProp(name, false, initComputed(source, prop)).computed;
+    const sProp = getProp(name, false, initComputed(source, prop));
+    const { computed } = sProp;
     if (computed) {
       die(`You should not set or delete computed props(${name})!`);
     }
@@ -387,8 +396,6 @@ function createStore<T extends Record<string, any>>(
     ) {
       // changed
       logger.log(`${name} changed`);
-
-      const sProp = getProp(name);
 
       // handle state
       if (!state.copy) {
@@ -808,7 +815,8 @@ function observe<T>(fc: T) {
     // observe fc
     const observed = ((...args: any[]) => {
       const storeRef = useRef<StoreRef>();
-      const [, forceUpdate] = useReducer((x) => x + 1, 0);
+      const [, setState] = useState({});
+      const forceUpdate = useCallback(() => setState({}), []);
 
       if (!storeRef.current) {
         const onDepend: ReportDepend = (prop, options) => {

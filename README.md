@@ -47,7 +47,7 @@ plugins: ["babel-plugin-sky0014-store-helper", ...],  // first place
 Write Store:
 
 ```typescript
-import { createStore, configStore, persist } from "@sky0014/store";
+import { createStore, configStore, persist, serial } from "@sky0014/store";
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -97,6 +97,8 @@ const app = createStore(new AppStore(), {
 });
 
 // persist store (if you want)
+// When you need persist serialization, register these types:
+// serial.register({ SomeClass });
 persist(app, {
   key: "app",
   ver: 0,
