@@ -194,7 +194,7 @@ function getComputedValue(computedProp: Prop) {
   const { computed } = computedProp;
 
   if (computed.changed) {
-    // 上级已被删除时，返回旧值兼容处理
+    // 兼容处理：上级已被删除时，返回旧值
     const that = getComputedThis(computedProp);
     if (!that) {
       return computed.value;
@@ -383,7 +383,8 @@ function createStore<T extends Record<string, any>>(
     logger.log(`${isDelete ? "delete" : "set"} ${name}`);
 
     const source = latest(state);
-    const computed = getProp(name, false, initComputed(source, prop)).computed;
+    const sProp = getProp(name, false, initComputed(source, prop));
+    const { computed } = sProp;
     if (computed) {
       die(`You should not set or delete computed props(${name})!`);
     }
@@ -395,8 +396,6 @@ function createStore<T extends Record<string, any>>(
     ) {
       // changed
       logger.log(`${name} changed`);
-
-      const sProp = getProp(name);
 
       // handle state
       if (!state.copy) {
