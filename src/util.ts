@@ -15,30 +15,6 @@ export function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// get all functions include prototype chain
-export function getFunctions(target: Record<string, any>) {
-  let that = target;
-  let map: Record<string, PropertyDescriptor> = {};
-  while (that && that !== Object.prototype) {
-    Object.getOwnPropertyNames(that).forEach((name) => {
-      if (name === "constructor") {
-        return;
-      }
-
-      const config = Object.getOwnPropertyDescriptor(that, name);
-      /* istanbul ignore else */
-      if (config) {
-        // 先找到的为准，后找到的忽略
-        if (!map[name]) {
-          map[name] = config;
-        }
-      }
-    });
-    that = Object.getPrototypeOf(that);
-  }
-  return map;
-}
-
 export function getDescriptor(target: any, prop: string) {
   let that = target;
   while (that && that !== Object.prototype) {
@@ -66,9 +42,6 @@ export function arrayPatch<T extends object>(handle: ProxyHandler<T>) {
   return arrayHandle;
 }
 
-export type ParametersExceptFirst<T extends (...args: any) => any> = T extends (
-  arg0: any,
-  ...args: infer P
-) => any
-  ? P
-  : never;
+export function isSpecialReactElement(val: any) {
+  return val && typeof val === "object" && !!val.$$typeof;
+}

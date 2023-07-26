@@ -4,7 +4,7 @@ A high-optimized multiple store for react and hooks.
 
 Another single store library: [easystore](https://github.com/sky0014/easystore)
 
-# Feature
+## Feature
 
 - Simple, less code, almost no dependencies
 - Extremely user-friendly, no boilerplate
@@ -26,25 +26,13 @@ npm install @sky0014/store
 
 ## Usage
 
-### Simple way **(Strongly recommend)**
+### Write Store
 
-Used with babel plugin: [babel-plugin-sky0014-store-helper](https://www.npmjs.com/package/babel-plugin-sky0014-store-helper)
+write store is simple, just a commom class.
 
-It will do all dirty work for you, and you no need to care about what to observe, just code as you wish :)
+getter is computed (don't use setter)
 
-Install
-
-```bash
-npm i babel-plugin-sky0014-store-helper --save-dev
-```
-
-Add to `babel.config.js`
-
-```js
-plugins: ["babel-plugin-sky0014-store-helper", ...],  // first place
-```
-
-Write Store:
+method is actions (store prop can only be changed with actions)
 
 ```typescript
 import { createStore, configStore, persist, serial } from "@sky0014/store";
@@ -55,7 +43,9 @@ function delay(ms: number) {
 
 // config store
 configStore({
-  debug: true,
+  debug: true, // enable debug
+  autoMemo: true, // enable auto memo observed component
+  autoMerge: true, // enable auto merge store data
 });
 
 // define store
@@ -108,18 +98,52 @@ persist(app, {
 export { app };
 ```
 
-### Use with Function Component **(Strongly Recommend)**
+### With babel plugin: [babel-plugin-sky0014-store-helper](https://www.npmjs.com/package/babel-plugin-sky0014-store-helper) **_(Strongly recommend)_**
+
+The Simplest way.
+
+It will do all dirty work for you, and you no need to care about what to observe, just code as you wish :)
+
+#### Config [babel-plugin-sky0014-store-helper](https://www.npmjs.com/package/babel-plugin-sky0014-store-helper)
+
+Install
+
+```bash
+npm i babel-plugin-sky0014-store-helper --save-dev
+```
+
+Add to `babel.config.js`
+
+```js
+plugins: ["babel-plugin-sky0014-store-helper", ...],  // first place
+```
+
+If you use custom import alias:
+
+```js
+import something from "@src/something";
+```
+
+This plugin will auto read `tsconfig.json -> paths` attribute to handle that.
+
+Otherwise, you should pass alias to plugin like this (just like `webpack config alias`):
+
+```js
+plugins: [["babel-plugin-sky0014-store-helper", { alias: { "@src": "xxxxx" } }], ...],  // first place
+```
+
+#### Used with Function Component **_(Strongly Recommend)_**
+
+Used with Function Component will get all the benefit: simple to code, best performance.
+
+FC is first class supported.
 
 ```typescript
 import { createRoot } from "react-dom/client";
 import { app } from "./store/app";
 
-// Use store(app) as you wish, when store changes, component will auto re-render
+// Use store: app as you wish, when store changes, component will auto re-render
 function App() {
-  useEffect(() => {
-    console.log("nest changed!");
-  }, [app.nest]);
-
   return (
     <>
       <div>{app.count}</div>
@@ -137,43 +161,11 @@ if (root) {
 }
 ```
 
-If you don't use `babel-plugin-sky0014-store-helper`, you should observe store manually:
+#### Used with Class Component
 
-```typescript
-import { observe } from "@sky0014/store";
-import { createRoot } from "react-dom/client";
-import { app } from "./store/app";
+**_(Don't until you have to, like history component or third-party component)_**
 
-// Use store(app) as you wish, when store changes, component will auto re-render
-function App() {
-  useEffect(() => {
-    console.log("nest changed!");
-  }, [observe(app.nest)]);
-
-  return (
-    <>
-      <div>{app.count}</div>
-      <div>{app.doubleCount}</div>
-      <button onClick={app.add}> Add </button>
-      <button onClick={app.addAsync}> Add Async </button>
-    </>
-  );
-}
-
-// render
-const root = document.getElementById("app");
-if (root) {
-  const Observed = observe(App);
-  createRoot(root).render(<Observed />);
-}
-```
-
-- All Function Component which used store should be observed
-- Store values you want to watch also should be observed
-
-### Used with Class Component **(Don't until you have to, like history component or third-party component)**
-
-pass store props to class component:
+Don't directly use store in class component like fc does, it cannot be traced, you should pass store props to class component.
 
 ```typescript
 import { observe } from "@sky0014/store";
@@ -194,10 +186,46 @@ if (root) {
 }
 ```
 
-use store props in class component:
+### Without `babel-plugin-sky0014-store-helper`, observe on your own
+
+If you don't use `babel-plugin-sky0014-store-helper`, you should observe component manually:
+
+#### Used with Function Component **_(Strongly Recommend)_**
 
 ```typescript
-import { observe, connect } from "@sky0014/store";
+import { observe } from "@sky0014/store";
+import { createRoot } from "react-dom/client";
+import { app } from "./store/app";
+
+// Use store: app as you wish, when store changes, component will auto re-render
+function App() {
+  return (
+    <>
+      <div>{app.count}</div>
+      <div>{app.doubleCount}</div>
+      <button onClick={app.add}> Add </button>
+      <button onClick={app.addAsync}> Add Async </button>
+    </>
+  );
+}
+
+// render
+const root = document.getElementById("app");
+if (root) {
+  // observe the component that used store
+  const Observed = observe(App);
+  createRoot(root).render(<Observed />);
+}
+```
+
+#### Used with Class Component
+
+**_(Don't until you have to, like history component or third-party component)_**
+
+Don't directly use store in class component like fc does, it cannot be traced, you should pass store props to class component:
+
+```typescript
+import { observe } from "@sky0014/store";
 import { createRoot } from "react-dom/client";
 import { app } from "./store/app";
 
@@ -210,21 +238,62 @@ class App extends React.Component {
 // render
 const root = document.getElementById("app");
 if (root) {
-  const Observed = connect(
-    () => ({
-      a: app.nest.a,
-    }),
-    Component
-  );
-  createRoot(root).render(<Observed />);
+  const Observed = observe(App);
+  createRoot(root).render(<Observed a={app.nest.a} />);
 }
 ```
 
-If you use `babel-plugin-sky0014-store-helper`, only need to write `connect` yourself.
+class component will auto use full observe.
+
+#### Component can't be traced (third party component etc ...)
+
+What's happened in these component can not be traced, so it should use full observe:
+
+```typescript
+import { observe } from "@sky0014/store";
+import { createRoot } from "react-dom/client";
+import { app } from "./store/app";
+import App from "some-third-party-lib";
+
+// render
+const root = document.getElementById("app");
+if (root) {
+  // full observe
+  const Observed = observe(App, { full: true });
+  createRoot(root).render(<Observed a={app.nest.a} />);
+}
+```
+
+### observe store props
+
+When there is some store props you want to watch, you should observe it too:
+
+```typescript
+import { observe } from "@sky0014/store";
+import { app } from "./store/app";
+
+function App() {
+  // observe app.nest, when app.nest or it's sub props changed, this component will be re-rendered
+  observe(app.nest);
+
+  return null;
+}
+```
 
 ## Best practice
 
-Strongly recommend use `babel-plugin-sky0014-store-helper` and `function component` to get best develop practice and running performance.
+Strongly recommend use `babel-plugin-sky0014-store-helper` and `function component` to get best develop practice and performance.
+
+## At last
+
+Without `babel-plugin-sky0014-store-helper`, you should do these manually:
+
+- All Component which used store should be observed
+- component that can not be traced should use full observe
+
+These is optional whenever you use the plugin:
+
+- If you want to watch store props, observe it.
 
 ## Publish
 

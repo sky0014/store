@@ -1,15 +1,17 @@
 import { Button, View } from "react-native";
 import { makeTest } from "../helper/core.test";
-import React from "react";
+import React, { forwardRef } from "react";
 
-function Component(props: any) {
+const Component = forwardRef((props: any, ref) => {
   const { onClick, ...rest } = props;
 
   if (onClick) {
-    return <Button {...rest} onPress={onClick} title={props.children} />;
+    return (
+      <Button {...rest} onPress={onClick} title={props.children} ref={ref} />
+    );
   }
 
-  return <View {...props} />;
-}
+  return <View {...props} ref={ref} />;
+});
 
 makeTest(Component, true);
