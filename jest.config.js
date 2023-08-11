@@ -1,10 +1,16 @@
 /** @type {import('ts-jest/dist/types').InitialOptionsTsJest} */
 
+const libs =
+  "react|react-dom|react-test-renderer|unstable_batchedupdates|@sky0014/serial";
+
+const base = {
+  coveragePathIgnorePatterns: ["/third_party/"],
+};
+
 const web = {
+  ...base,
   testEnvironment: "jsdom",
-  transformIgnorePatterns: [
-    "/node_modules/(?!(unstable_batchedupdates|@sky0014/serial))",
-  ],
+  transformIgnorePatterns: [`/node_modules/(?!(${libs}))`],
   setupFilesAfterEnv: ["@testing-library/jest-dom/"],
   testMatch: ["<rootDir>/test/web/**/*.[jt]s?(x)"],
 };
@@ -27,12 +33,16 @@ const react17 = {
 };
 
 const rn = {
+  ...base,
+  globals: {
+    IS_RN: true,
+  },
   testEnvironment: "node", // should be "node"
   displayName: "React Native",
   preset: "react-native",
   testMatch: ["<rootDir>/test/native/**/*.[jt]s?(x)"],
   transformIgnorePatterns: [
-    "/node_modules/(?!(@react-native|react-native|unstable_batchedupdates|@sky0014/serial)/).*",
+    `/node_modules/(?!(@react-native|react-native|${libs})/).*`,
   ],
   transform: {
     // overwrite react-native jest-preset transform key (^.+\\.(js|ts|tsx)$)

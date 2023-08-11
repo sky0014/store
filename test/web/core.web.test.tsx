@@ -1,7 +1,7 @@
-import React from "react";
+import React, { forwardRef } from "react";
 import { makeTest } from "../helper/core.test";
 
-function View(props: any) {
+const View = forwardRef((props: any, ref) => {
   const { testID, ...rest } = props;
 
   const extra: Record<string, any> = {};
@@ -9,7 +9,7 @@ function View(props: any) {
     extra["data-testid"] = props.testID;
   }
 
-  return <div {...rest} {...extra}></div>;
-}
+  return <div {...rest} {...extra} ref={ref}></div>;
+});
 
 makeTest(View);
